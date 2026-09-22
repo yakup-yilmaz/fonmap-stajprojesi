@@ -1,1 +1,3 @@
-# fonmap-stajprojesi 
+# fonmap-stajprojesi
+
+Fon Gün İçi Tahmini Getiri Platformu

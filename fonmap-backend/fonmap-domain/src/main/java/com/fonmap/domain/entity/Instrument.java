@@ -50,9 +50,9 @@ import java.util.UUID;
 public class Instrument {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
-    @Column(name = "id", updatable = false, nullable = false)
-    private UUID id;
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id")
+    private Long id;
 
     /**
      * Resmi borsa işlem sembolü (ticker).

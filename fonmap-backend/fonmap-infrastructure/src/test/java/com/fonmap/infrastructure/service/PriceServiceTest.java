@@ -142,7 +142,7 @@ class PriceServiceTest {
 
         // Veritabanında THYAO enstrümanı mevcut
         Instrument instrument = Instrument.builder()
-                .id(UUID.randomUUID())
+                .id(1L)
                 .ticker("THYAO")
                 .build();
         when(instrumentRepository.findByTicker("THYAO")).thenReturn(Optional.of(instrument));
@@ -184,7 +184,7 @@ class PriceServiceTest {
         when(bigparaPriceProvider.getPrice("THYAO")).thenReturn(bigparaDto);
 
         Instrument instrument = Instrument.builder()
-                .id(UUID.randomUUID())
+                .id(1L)
                 .ticker("THYAO")
                 .build();
         when(instrumentRepository.findByTicker("THYAO")).thenReturn(Optional.of(instrument));
@@ -250,7 +250,7 @@ class PriceServiceTest {
 
         // PostgreSQL veritabanımızda dünkü işlem gününden kalma son geçerli fiyat kaydı var
         Instrument instrument = Instrument.builder()
-                .id(UUID.randomUUID())
+                .id(1L)
                 .ticker("THYAO")
                 .build();
 
@@ -301,7 +301,7 @@ class PriceServiceTest {
         when(yahooFinancePriceProvider.getPrice("USD")).thenReturn(yahooUsdDto);
 
         Instrument instrument = Instrument.builder()
-                .id(UUID.randomUUID())
+                .id(1L)
                 .ticker("USD")
                 .build();
         when(instrumentRepository.findByTicker("USD")).thenReturn(Optional.of(instrument));
