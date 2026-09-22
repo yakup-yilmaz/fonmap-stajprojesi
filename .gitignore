@@ -1,0 +1,39 @@
+# =============================================================================
+# FONMAP — Git Ignore Dosyası
+# =============================================================================
+
+# Maven derleme çıktıları
+**/target/
+*.class
+
+# Log dosyaları
+*.log
+logs/
+
+# IDE ayar dosyaları
+.idea/
+*.iml
+.vscode/
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+# İşletim sistemi kalıntıları
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Çevre değişkenleri ve yerel sırlar
+.env
+.env.local
+
+# Markdown çalışma ve rehber notları
+*.md
+**/*.md
+!README.md
+
+# Örnek PDF raporları klasörü
+samples/
+**/samples/

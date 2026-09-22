@@ -1,0 +1,59 @@
+name: Fonmap CI Pipeline
+
+# =============================================================================
+# FONMAP — Sürekli Entegrasyon (CI) İş Akışı
+# =============================================================================
+# Bu iş akışı GitHub'a her kod gönderildiğinde (push) veya Pull Request açıldığında
+# otomatik çalışır. Kodun derlendiğini ve tüm testlerin geçtiğini doğrular.
+# =============================================================================
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-and-test:
+    name: Java 21 Derleme ve Test Koşusu
+    runs-on: ubuntu-latest
+
+    # Testlerimizin (PriceCacheServiceTest vb.) canlı Redis'e bağlanabilmesi için
+    # GitHub sanal makinesinde arka planda bir Redis konteyneri çalıştırıyoruz
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      # 1. Adım: Repodaki kodları çek
+      - name: Kodu Çalışma Alanına Çek (Checkout)
+        uses: actions/checkout@v4
+
+      # 2. Adım: Java 21 ortamını hazırla ve Maven kütüphanelerini önbelleğe al
+      - name: Java 21 (Temurin) Kurulumu
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # 3. Adım: Tüm modülleri derle ve birim/entegrasyon testlerini çalıştır
+      - name: Maven ile Derle ve Testleri Çalıştır
+        working-directory: ./fonmap-backend
+        run: mvn clean test --batch-mode
+
+      # 4. Adım: Test raporlarını arşivle (Test başarısız olursa web arayüzünden logları indirmek için)
+      - name: Test Raporlarını Kaydet (Surefire Reports)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-raporlari
+          path: fonmap-backend/**/target/surefire-reports/
+          retention-days: 7
