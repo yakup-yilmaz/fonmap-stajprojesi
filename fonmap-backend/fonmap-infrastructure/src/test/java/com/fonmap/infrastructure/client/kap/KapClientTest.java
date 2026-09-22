@@ -1,10 +1,12 @@
 package com.fonmap.infrastructure.client.kap;
 
 import com.fonmap.infrastructure.client.kap.dto.KapPdfDto;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -13,9 +15,12 @@ import static org.junit.jupiter.api.Assertions.*;
  * KapClientTest — KAP PDF İstemcisi ve SHA-256 İdempotency Testleri
  * =================================================================
  *
- * Bu test sınıfı; KapClient'ın yerel 'samples/' klasöründeki gerçek PDF'leri
- * doğru bulup okuduğunu, 64 karakterlik kriptografik SHA-256 parmak izini
- * hatasız ve deterministik ürettiğini ve akıllı fallback mekanizmasını doğrular.
+ * Bu test sınıfı;
+ * 1. Saf Birim Testleri: CI/CD ortamında herhangi bir dış dosyaya veya ağa
+ *    bağımlı olmadan SHA-256 hash motorunu ve URL ayıklama mantığını doğrular.
+ * 2. Yerel Entegrasyon Testleri: Eğer yerel makinede 'samples/' klasörü mevcutsa
+ *    7 fonun gerçek PDF'lerini okuyarak tam doğrulamayı icra eder; 'samples/'
+ *    bulunmayan CI/CD ortamlarında ise testi güvenle atlar (skip).
  */
 class KapClientTest {
 
@@ -26,9 +31,64 @@ class KapClientTest {
         kapClient = new KapClient();
     }
 
+    // =========================================================================
+    // SAF BİRİM TESTLERİ (CI/CD Dostu — Harici Dosya Bağımsız)
+    // =========================================================================
+
+    @Test
+    @DisplayName("Standart SHA-256 Vektör Testi: Boş Verinin Bilinen Kriptografik Özeti")
+    void testSha256KnownVector() {
+        // Kriptografide boş bayt dizisinin ("") SHA-256 özeti evrensel olarak sabittir:
+        // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        String emptySha256 = kapClient.calculateSha256(new byte[0]);
+        assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", emptySha256);
+
+        // Null bayt dizisi de güvenli şekilde boş dizi gibi ele alınmalıdır
+        String nullSha256 = kapClient.calculateSha256(null);
+        assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", nullSha256);
+    }
+
+    @Test
+    @DisplayName("SHA-256 Deterministik Hesaplama Testi (Harici Dosya Bağımsız)")
+    void testSha256Calculation_WithByteData() {
+        byte[] sampleData = "FONMAP-TEST-PDF-CONTENT-2026".getBytes(StandardCharsets.UTF_8);
+        String hash1 = kapClient.calculateSha256(sampleData);
+        String hash2 = kapClient.calculateSha256(sampleData);
+
+        assertNotNull(hash1);
+        assertEquals(64, hash1.length(), "SHA-256 tam 64 karakter (256-bit) olmalıdır");
+        assertTrue(hash1.matches("^[a-f0-9]{64}$"), "SHA-256 sadece küçük harf hex içermelidir");
+        assertEquals(hash1, hash2, "Aynı veri için üretilen SHA-256 deterministik (birebir aynı) olmalıdır");
+    }
+
+    @Test
+    @DisplayName("Geçersiz veya Boş Fon Kodu Verildiğinde IllegalArgumentException Fırlatılmalı")
+    void testFetchPdf_WithNullOrBlankFundCode_ThrowsException() {
+        assertThrows(IllegalArgumentException.class, () -> kapClient.fetchPdf(null, "https://example.com/test.pdf"));
+        assertThrows(IllegalArgumentException.class, () -> kapClient.fetchPdf("   ", "https://example.com/test.pdf"));
+    }
+
+    @Test
+    @DisplayName("URL'den Dosya Adı Ayıklama Mantığı Doğru Çalışmalı")
+    void testExtractFileNameFromUrl() {
+        String fileName = kapClient.extractFileNameFromUrl("https://www.kap.org.tr/tr/Bildirim/12345/ek/portfoy.pdf", "THF");
+        assertEquals("portfoy.pdf", fileName);
+
+        String fallbackName = kapClient.extractFileNameFromUrl("https://www.kap.org.tr/tr/Bildirim/12345", "TTE");
+        assertEquals("TTE_kap_raporu.pdf", fallbackName);
+    }
+
+    // =========================================================================
+    // YEREL ENTEGRASYON TESTLERİ (samples/ Klasörü Varsa Çalışır, Yoksa Atlar)
+    // =========================================================================
+
     @Test
     @DisplayName("7 Fonun Tamamı İçin 'samples/' Klasöründen Yerel PDF Okuma ve SHA-256 Testi")
     void testLoadFromLocalSample_AllSevenFunds() {
+        // CI veya 'samples/' bulunmayan ortamlarda testi güvenle atla
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
+
         // Projemizin kapsamındaki 7 resmi başlangıç fonu
         List<String> fundCodes = List.of("THF", "TLY", "TMV", "DOH", "TTE", "DFI", "KHA");
 
@@ -64,6 +124,9 @@ class KapClientTest {
     @Test
     @DisplayName("Deterministik SHA-256 Testi: Aynı Dosya İçin Peş Peşe Hesaplanan Hash'ler Birebir Eşit Olmalıdır")
     void testDeterministicSha256() {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
+
         // 1. İlk okuma
         KapPdfDto firstRun = kapClient.loadFromLocalSample("THF");
         // 2. İkinci okuma
@@ -78,22 +141,12 @@ class KapClientTest {
     }
 
     @Test
-    @DisplayName("Standart SHA-256 Vektör Testi: Boş Verinin Bilinen Kriptografik Özeti")
-    void testSha256KnownVector() {
-        // Kriptografide boş bayt dizisinin ("") SHA-256 özeti evrensel olarak sabittir:
-        // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-        String emptySha256 = kapClient.calculateSha256(new byte[0]);
-        assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", emptySha256);
-
-        // Null bayt dizisi de güvenli şekilde boş dizi gibi ele alınmalıdır
-        String nullSha256 = kapClient.calculateSha256(null);
-        assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", nullSha256);
-    }
-
-    @Test
     @DisplayName("Mevcut Olmayan Fon Kodu İstendiğinde Kontrollü Hata Fırlatma Testi")
     void testNonExistentFund_ThrowsException() {
-        // Sistemde "BİLİNMEYEN_FON" kodlu bir örnek dosya yoktur
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
+
+        // Sistemde "BILINMEYEN" kodlu bir örnek dosya yoktur
         Exception exception = assertThrows(RuntimeException.class, () -> {
             kapClient.loadFromLocalSample("BILINMEYEN");
         });
@@ -104,6 +157,9 @@ class KapClientTest {
     @Test
     @DisplayName("Akıllı Fallback Testi: Canlı URL Ulaşılamazsa Sistemin Çökmeyip Yerel Örneğe Geçmesi")
     void testFetchPdfFallback_WhenUrlFails_UsesLocalSample() {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
+
         // Geçersiz bir URL veriyoruz. Sistem hata verip patlamamalı,
         // loga uyarı basıp yerel 'samples/THF_*.pdf' dosyasına fallback yapmalıdır.
         String invalidUrl = "http://localhost:59999/gecersiz_link.pdf";
@@ -117,3 +173,4 @@ class KapClientTest {
         assertNotNull(dto.getSha256Hash());
     }
 }
+

@@ -105,9 +105,16 @@ public class KapClient {
             }
         }
 
-        // 2. Canlı başarısız olduysa veya URL yoksa yerel 'samples/' klasöründen yükle
-        log.info("[KapClient] Yerel örnek dosya aranıyor: Fon='{}'", normalizedCode);
-        return loadFromLocalSample(normalizedCode);
+        // 2. Canlı başarısız olduysa veya URL yoksa:
+        // Eğer yerel 'samples/' klasörü mevcutsa (yerel geliştirme/test ortamı) oradan yükle
+        if (hasLocalSamples()) {
+            log.info("[KapClient] Canlı veri yok/başarısız, yerel örnek dosya aranıyor: Fon='{}'", normalizedCode);
+            return loadFromLocalSample(normalizedCode);
+        }
+
+        throw new IllegalStateException(String.format(
+                "[KapClient] '%s' fonu için PDF temin edilemedi. Canlı URL: %s, yerel 'samples/' klasörü mevcut değil.",
+                normalizedCode, (pdfUrl != null ? pdfUrl : "belirtilmedi")));
     }
 
     /**
@@ -229,6 +236,22 @@ public class KapClient {
     }
 
     /**
+     * Ortamda yerel 'samples/' klasörünün bulunup bulunmadığını kontrol eder.
+     * CI ortamlarında veya canlı üretim sunucusunda 'samples/' klasörü olmadan çalışılırken
+     * gereksiz hata fırlatılmasını engeller.
+     *
+     * @return Yerel örnek klasörü varsa true, yoksa false
+     */
+    public boolean hasLocalSamples() {
+        try {
+            findSamplesDirectory();
+            return true;
+        } catch (FileNotFoundException e) {
+            return false;
+        }
+    }
+
+    /**
      * Akıllı 'samples' dizini bulucu.
      * Mevcut çalışma dizinini (CWD) ve üst dizinlerini kontrol ederek
      * projedeki 'samples' klasörünün mutlak yolunu bulur.
@@ -279,7 +302,7 @@ public class KapClient {
     /**
      * URL'den dosya adını ayıklar; ayıklayamazsa fon koduna göre varsayılan isim üretir.
      */
-    private String extractFileNameFromUrl(String url, String fundCode) {
+    String extractFileNameFromUrl(String url, String fundCode) {
         try {
             int lastSlash = url.lastIndexOf('/');
             if (lastSlash != -1 && lastSlash < url.length() - 1) {
