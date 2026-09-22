@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -101,8 +102,12 @@ public class PriceService {
             livePrice = fetchLivePriceWithResilience(cleanSymbol);
         } catch (Exception e) {
             // Eğer Resilience4j AOP proxy bypass edilmişse (örneğin self-invocation veya unit test),
-            // failover zincirini manuel tetikleyerek Bigpara ve Veritabanı koruma kalkanını garantiye al
-            livePrice = fallbackToBigpara(cleanSymbol, e);
+            // varlık türüne uygun failover zincirini manuel tetikle
+            if (isFxOrRepo(cleanSymbol)) {
+                livePrice = fetchFxOrRepoWithFallback(cleanSymbol);
+            } else {
+                livePrice = fallbackToBigpara(cleanSymbol, e);
+            }
         }
 
         // 3. AŞAMA: Çekilen canlı fiyatı hem Redis'e koy hem PostgreSQL'e kalıcı yaz
@@ -163,13 +168,60 @@ public class PriceService {
     @Retry(name = "priceProvider")
     @CircuitBreaker(name = "priceProvider", fallbackMethod = "fallbackToBigpara")
     public MarketPriceDto fetchLivePriceWithResilience(String symbol) {
-        // Döviz veya Repo faizi ise doğrudan TCMB sağlayıcısına yönlendir
+        // Döviz veya Repo faizi ise doğrudan TCMB yedekli sağlayıcı zincirine yönlendir
         if (isFxOrRepo(symbol)) {
-            return tcmbPriceProvider.getPrice(symbol);
+            return fetchFxOrRepoWithFallback(symbol);
         }
 
         // Hisse senedi veya borsa endeksi ise 1. Birincil sağlayıcı Yahoo Finance'e sor
         return yahooFinancePriceProvider.getPrice(symbol);
+    }
+
+    /**
+     * DÖVİZ VE REPO FALLBACK ZİNCİRİ:
+     * TCMB servisi yanıt vermediğinde veya çöktüğünde devreye girer.
+     * 1. Döviz ise (USD, EUR, GBP) -> 2. Sağlayıcı Yahoo Finance (USDTRY=X) üzerinden kurtarılır.
+     * 2. Yahoo da çökerse -> PostgreSQL 'price_quotes' tablosundaki son kur kurtarılır.
+     * 3. Repo/Faiz ise -> PostgreSQL son oran veya %37 acil durum repo nema oranı uygulanır.
+     */
+    public MarketPriceDto fetchFxOrRepoWithFallback(String symbol) {
+        try {
+            return tcmbPriceProvider.getPrice(symbol);
+        } catch (Exception tcmbEx) {
+            log.warn("[FAILOVER] TCMB servisi yanıt vermedi ({}), yedek döviz/repo sağlayıcısı devreye giriyor! Sembol: '{}'",
+                    tcmbEx.getMessage(), symbol);
+
+            // Döviz (USD, EUR, GBP) için 2. Sağlayıcı: Yahoo Finance
+            if (isFx(symbol)) {
+                try {
+                    log.info("[FAILOVER] TCMB yerine Yahoo Finance üzerinden döviz kuru alınıyor: '{}'", symbol);
+                    MarketPriceDto yahooFx = yahooFinancePriceProvider.getPrice(symbol);
+                    return MarketPriceDto.builder()
+                            .symbol(symbol)
+                            .currentPrice(yahooFx.getCurrentPrice())
+                            .previousClose(yahooFx.getPreviousClose())
+                            .dailyChangeRatio(yahooFx.getDailyChangeRatio())
+                            .quoteTime(yahooFx.getQuoteTime() != null ? yahooFx.getQuoteTime() : LocalDateTime.now())
+                            .source("YAHOO_FX_FALLBACK")
+                            .build();
+                } catch (Exception yahooEx) {
+                    log.error("[CRITICAL] Hem TCMB hem Yahoo Finance çöktü! Veritabanına bakılıyor: '{}'", symbol);
+                    return fallbackToDatabase(symbol, yahooEx);
+                }
+            }
+
+            // Repo / Faiz için Fallback
+            if (isDeposit(symbol)) {
+                try {
+                    return fallbackToDatabase(symbol, tcmbEx);
+                } catch (Exception dbEx) {
+                    log.warn("[DB FALLBACK] Veritabanında repo kaydı yok, acil durum %37 repo faizi uygulanıyor: '{}'", symbol);
+                    return MarketPriceDto.ofRepo(symbol, BigDecimal.valueOf(0.370000), "EMERGENCY_REPO_FALLBACK");
+                }
+            }
+
+            return fallbackToDatabase(symbol, tcmbEx);
+        }
     }
 
     /**

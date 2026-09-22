@@ -277,4 +277,47 @@ class PriceServiceTest {
         // Veritabanı sorgusunun yapıldığı teyit edilir
         verify(priceQuoteRepository).findLatestByTickerWithInstrument(eq("THYAO"), any(PageRequest.class));
     }
+
+    // ========================================================================
+    // TEST 6: TCMB Failover (TCMB Çökünce Dolar Kuru Yahoo Finance'ten Kurtarılır)
+    // ========================================================================
+    @Test
+    @DisplayName("6. TCMB Failover: TCMB servisi çöktüğünde Dolar kuru (USD) otomatik olarak Yahoo Finance'ten kurtarılmalı")
+    void shouldFallbackToYahooWhenTcmbFailsForUsd() {
+        // HAZIRLIK (GIVEN): Redis boş
+        when(priceCacheService.getPrice("USD")).thenReturn(Optional.empty());
+
+        // TCMB bağlantı hatası veriyor (Çöktü simülasyonu)
+        when(tcmbPriceProvider.getPrice("USD"))
+                .thenThrow(new PriceProviderException("TCMB", "USD", "TCMB XML sunucusu yanıt vermedi"));
+
+        // Yedek sağlayıcı Yahoo Finance canlı Dolar kurunu (USDTRY=X) veriyor
+        MarketPriceDto yahooUsdDto = MarketPriceDto.of(
+                "USD",
+                BigDecimal.valueOf(48.85),
+                BigDecimal.valueOf(48.80),
+                "YAHOO"
+        );
+        when(yahooFinancePriceProvider.getPrice("USD")).thenReturn(yahooUsdDto);
+
+        Instrument instrument = Instrument.builder()
+                .id(UUID.randomUUID())
+                .ticker("USD")
+                .build();
+        when(instrumentRepository.findByTicker("USD")).thenReturn(Optional.of(instrument));
+
+        // İŞLEM (WHEN): USD kuru istenir
+        MarketPriceDto result = priceService.getPrice("USD");
+
+        // DOĞRULAMA (THEN):
+        assertNotNull(result);
+        assertEquals("YAHOO_FX_FALLBACK", result.getSource(), "Kaynağın Yahoo FX yedeği olduğu doğrulanmalı");
+        assertEquals(0, BigDecimal.valueOf(48.85).compareTo(result.getCurrentPrice()));
+
+        // TCMB'nin denendiği ve Yahoo'nun kurtardığı doğrulanır
+        verify(tcmbPriceProvider).getPrice("USD");
+        verify(yahooFinancePriceProvider).getPrice("USD");
+        verify(priceCacheService).putPrice(any(MarketPriceDto.class));
+        verify(priceQuoteRepository).save(any(PriceQuote.class));
+    }
 }

@@ -144,8 +144,11 @@ public class YahooFinancePriceProvider implements PriceProvider {
             return upper;
         }
 
-        if (upper.equals("USDTRY") || upper.equals("EURTRY") || upper.equals("GBPTRY")) {
-            return upper + "=X";
+        if (upper.equals("USD") || upper.equals("USDTRY") ||
+            upper.equals("EUR") || upper.equals("EURTRY") ||
+            upper.equals("GBP") || upper.equals("GBPTRY")) {
+            String base = upper.endsWith("TRY") ? upper : upper + "TRY";
+            return base + "=X";
         }
 
         if (upper.equals("ALTIN") || upper.equals("GOLD") || upper.equals("XAUUSD")) {
