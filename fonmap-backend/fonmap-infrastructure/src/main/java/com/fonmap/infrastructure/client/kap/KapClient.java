@@ -103,22 +103,27 @@ public class KapClient {
                 log.info("[KapClient] Doğrudan URL indirmesi başlatılıyor: Fon='{}', URL='{}'", normalizedCode, pdfUrl);
                 return downloadFromUrl(normalizedCode, pdfUrl.trim());
             } catch (Exception e) {
-                log.warn("[KapClient] Doğrudan indirme başarısız oldu ({}). Otomatik keşfe geçiliyor...", e.getMessage());
+                log.warn("[KapClient] Doğrudan indirme başarısız oldu ({}). Yerel yedeğe (samples/) geçiliyor...", e.getMessage());
+                if (hasLocalSamples()) {
+                    return loadFromLocalSample(normalizedCode);
+                }
             }
         }
 
-        // 2. Otomatik Keşif Modu (T3.1 & T3.2): KAP'tan fon koduna göre en son raporu bul ve indir
-        try {
-            log.info("[KapClient] 🔍 Otomatik KAP keşfi başlatılıyor: Fon='{}'...", normalizedCode);
-            KapPdfDto discoveredDto = discoverAndDownloadLatestPdf(normalizedCode);
-            if (discoveredDto != null && !discoveredDto.isEmpty()) {
-                log.info("[KapClient] 🎯 Otomatik keşif BAŞARILI: Fon='{}', Dosya='{}', Boyut={} KB",
-                        normalizedCode, discoveredDto.getFileName(), String.format("%.2f", discoveredDto.getSizeInKb()));
-                return discoveredDto;
+        // 2. Otomatik Keşif Modu (T3.1 & T3.2): URL belirtilmemişse KAP'tan fon koduna göre en son raporu bul ve indir
+        if (pdfUrl == null || pdfUrl.trim().isEmpty()) {
+            try {
+                log.info("[KapClient] 🔍 Otomatik KAP keşfi başlatılıyor: Fon='{}'...", normalizedCode);
+                KapPdfDto discoveredDto = discoverAndDownloadLatestPdf(normalizedCode);
+                if (discoveredDto != null && !discoveredDto.isEmpty()) {
+                    log.info("[KapClient] 🎯 Otomatik keşif BAŞARILI: Fon='{}', Dosya='{}', Boyut={} KB",
+                            normalizedCode, discoveredDto.getFileName(), String.format("%.2f", discoveredDto.getSizeInKb()));
+                    return discoveredDto;
+                }
+            } catch (Exception e) {
+                log.warn("[KapClient] Otomatik KAP keşfi başarısız/sonuçsuz ({}). Yerel yedeğe (samples/) geçiliyor...",
+                        e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("[KapClient] Otomatik KAP keşfi başarısız/sonuçsuz ({}). Yerel yedeğe (samples/) geçiliyor...",
-                    e.getMessage());
         }
 
         // 3. Canlı başarısız olduysa veya KAP erişilemezse yerel 'samples/' klasöründen yükle (Fallback)
