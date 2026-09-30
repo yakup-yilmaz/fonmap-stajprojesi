@@ -36,4 +36,16 @@ public interface FundSnapshotRepository extends JpaRepository<FundSnapshot, UUID
      */
     @Query("SELECT fs FROM FundSnapshot fs WHERE fs.report.id = :reportId")
     Optional<FundSnapshot> findByReportId(@Param("reportId") UUID reportId);
+
+    /**
+     * Backtest ve Geçmiş Simülasyonu için Zaman Noktası (Point-in-Time) Sorgusu:
+     * Belirli bir simülasyon gününde (targetDate) yürürlükte olan en güncel snapshot'ı getirir.
+     * Geleceğe bakma hatasını (Look-Ahead Bias) önlemek için snapshotDate <= targetDate şartı aranır.
+     * PageRequest.of(0, 1) ile çağrılır.
+     */
+    @Query("SELECT fs FROM FundSnapshot fs JOIN FETCH fs.fund WHERE fs.fund.code = :fundCode AND fs.snapshotDate <= :targetDate ORDER BY fs.snapshotDate DESC")
+    List<FundSnapshot> findLatestByFundCodeAndDateBeforeOrEqual(
+            @Param("fundCode") String fundCode,
+            @Param("targetDate") java.time.LocalDate targetDate,
+            Pageable pageable);
 }

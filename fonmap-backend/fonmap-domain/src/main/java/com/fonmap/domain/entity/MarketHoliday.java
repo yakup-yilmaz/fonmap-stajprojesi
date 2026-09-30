@@ -65,12 +65,6 @@ public class MarketHoliday {
     @Column(name = "holiday_date", nullable = false, unique = true)
     private LocalDate holidayDate;
 
-    /**
-     * Tatilin açıklayıcı adı.
-     * Örnek: "Cumhuriyet Bayramı", "Ramazan Bayramı 1. Gün", "Yılbaşı"
-     */
-    @Column(name = "description", nullable = false, length = 100)
-    private String description;
 
     /**
      * Yarım gün seans mı?

@@ -34,25 +34,30 @@ import java.util.Optional;
  *
  * NEDEN VAR?
  * Gün boyu 10:00 - 18:10 arasında hisse senetlerinin borsa hareketlerine göre
- * ürettiğimiz tahmini net getirinin doğruluğunu ölçmek için TEFAS'ın gece 23:00'te
+ * ürettiğimiz tahmini net getirinin doğruluğunu ölçmek için TEFAS'ın gece
+ * 23:00'te
  * yayımladığı resmi kapanış fiyatına ihtiyaç duyarız.
  *
  * TEFAS RESMİ REST API UÇ NOKTASI:
  * - URL: https://www.tefas.gov.tr/api/DB/BindHistoryInfo
  * - Metot: HTTP POST (x-www-form-urlencoded)
  * - Parametreler:
- *     fontip: "YAT" (Yatırım Fonları)
- *     fonkod: "THF" (Fon kodu)
- *     bastarih: "22.09.2026" (dd.MM.yyyy)
- *     bittarih: "22.09.2026" (dd.MM.yyyy)
+ * fontip: "YAT" (Yatırım Fonları)
+ * fonkod: "THF" (Fon kodu)
+ * bastarih: "22.09.2026" (dd.MM.yyyy)
+ * bittarih: "22.09.2026" (dd.MM.yyyy)
  *
  * KRİTİK FİNANSAL KURALLAR:
- * 1. 6 Basamak Hassasiyet: Katılma payı fiyatları virgülden sonra en az 6 basamak
- *    (Örn: 3.456789 TL) olarak saklanır (RoundingMode.HALF_UP).
- * 2. Resmi Getiri Formülü: Günlük getiri iki günün TEFAS kapanışından hesaplanır:
- *    r = (P_t - P_{t-1}) / P_{t-1}
- * 3. Hata Toleransı (Resilience): TEFAS gece bakım saatlerinde (23:00 - 00:00) bazen
- *    5-10 dakika yanıt vermeyebilir. İstemci sistemi düşürmez; kontrollü şekilde loglar.
+ * 1. 6 Basamak Hassasiyet: Katılma payı fiyatları virgülden sonra en az 6
+ * basamak
+ * (Örn: 3.456789 TL) olarak saklanır (RoundingMode.HALF_UP).
+ * 2. Resmi Getiri Formülü: Günlük getiri iki günün TEFAS kapanışından
+ * hesaplanır:
+ * r = (P_t - P_{t-1}) / P_{t-1}
+ * 3. Hata Toleransı (Resilience): TEFAS gece bakım saatlerinde (23:00 - 00:00)
+ * bazen
+ * 5-10 dakika yanıt vermeyebilir. İstemci sistemi düşürmez; kontrollü şekilde
+ * loglar.
  */
 @Component
 @Slf4j
@@ -67,8 +72,10 @@ public class TefasClient {
 
     /**
      * Varsayılan Yapıcı Metot (Default Constructor).
-     * TEFAS'ın güvenlik ve AJAX filtrelerine uygun HTTP başlıklarıyla WebClient'ı yapılandırır:
-     * - X-Requested-With: XMLHttpRequest (TEFAS doğrudan tarayıcı dışı botları engellemek için AJAX başlığı arar)
+     * TEFAS'ın güvenlik ve AJAX filtrelerine uygun HTTP başlıklarıyla WebClient'ı
+     * yapılandırır:
+     * - X-Requested-With: XMLHttpRequest (TEFAS doğrudan tarayıcı dışı botları
+     * engellemek için AJAX başlığı arar)
      * - Content-Type: application/x-www-form-urlencoded
      * - 15 saniyelik yanıt zaman aşımı (Timeout)
      */
@@ -81,7 +88,8 @@ public class TefasClient {
         this.webClient = WebClient.builder()
                 .baseUrl(TEFAS_BASE_URL)
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .defaultHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+                .defaultHeader("User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
                 .defaultHeader("X-Requested-With", "XMLHttpRequest")
                 .defaultHeader("Accept", "application/json, text/javascript, */*; q=0.01")
                 .build();
@@ -96,12 +104,29 @@ public class TefasClient {
     }
 
     /**
-     * 1. ANA GÖREV: Belirli Bir Tarihteki Resmi Fon Kapanış Verisini Çeker.
-     * Gece 23:00 mutabakat servisi tarafından çağrılır.
+     * 1. ANA GÖREV: Belirli Bir Tarihteki Resmi Fon Kapanış Verisini ve Getirisini
+     * Çeker.
+     * Gece mutabakat ve retry zamanlayıcısı tarafından periyodik olarak çağrılır.
+     *
+     * ÖNEMLİ MANTIK (GETİRİ HESAPLAMA & TEFAS RETRY POLİTİKASI):
+     * TEFAS'ın ham verisinde getiri oranı doğrudan gelmez; iki günün katılma payı
+     * fiyatı
+     * (P_t ve P_{t-1}) üzerinden formülize edilir:
+     * r = (P_t - P_{t-1}) / P_{t-1}
+     * Bu yüzden sadece o günü sorgulamak yerine 7 gün öncesinden (hafta sonu /
+     * bayram tatili koruması)
+     * bugüne kadar olan aralığı sorguluyoruz. Böylece:
+     * 1. Bir önceki seansın kapanış fiyatı tespit edilir.
+     * 2. Hedef tarihin günlük getiri oranı (dailyReturn) hatasız hesaplanır.
+     * 3. Eğer TEFAS hedef tarihin fiyatını henüz AÇIKLAMAMIŞSA, dönen listede o
+     * tarih bulunmaz
+     * ve metot Optional.empty() döner. Bu sayede zamanlayıcı durumu anlayıp 15 dk
+     * sonra tekrar dener!
      *
      * @param fundCode Fon kodu (Örn: "THF", "TLY", "TTE")
      * @param date     Resmi fiyatın ait olduğu işlem günü tarihi
-     * @return Bulunursa TefasFundDto, henüz açıklanmadıysa veya hata oluştuysa Optional.empty()
+     * @return Bulunursa ve o güne ait fiyat açıklanmışsa TefasFundDto, henüz
+     *         açıklanmadıysa Optional.empty()
      */
     public Optional<TefasFundDto> fetchFundPrice(String fundCode, LocalDate date) {
         if (fundCode == null || fundCode.trim().isEmpty()) {
@@ -112,22 +137,35 @@ public class TefasClient {
         }
 
         String normalizedCode = fundCode.trim().toUpperCase();
-        log.info("[TefasClient] TEFAS resmi fiyatı sorgulanıyor: Fon='{}', Tarih={}", normalizedCode, date);
+        log.info("[TefasClient] TEFAS resmi fiyatı sorgulanıyor: Fon='{}', Hedef Tarih={}", normalizedCode, date);
 
-        List<TefasFundDto> results = fetchHistoricalPrices(normalizedCode, date, date);
+        LocalDate queryStart = date.minusDays(15);
+        List<TefasFundDto> results = fetchHistoricalPrices(normalizedCode, queryStart, date);
         if (results.isEmpty()) {
-            log.warn("[TefasClient] TEFAS'ta fon için fiyat kaydı bulunamadı (Henüz açıklanmamış olabilir): Fon='{}', Tarih={}",
+            log.warn("[TefasClient] TEFAS'ta fon için hiçbir veri dönmedi: Fon='{}', Tarih={}",
                     normalizedCode, date);
             return Optional.empty();
         }
 
-        // İlgili tarihe en uygun kaydı döner
-        return Optional.of(results.get(0));
+        // İlgili hedef tarihe (date) tam olarak uyuşan kaydı filtrele
+        Optional<TefasFundDto> targetDayRecord = results.stream()
+                .filter(r -> r.getPriceDate().equals(date))
+                .findFirst();
+
+        if (targetDayRecord.isEmpty()) {
+            log.info("[TefasClient] ⏳ Fon '{}' için {} tarihli resmi fiyat henüz TEFAS'ta yayımlanmamış (Beklemede).",
+                    normalizedCode, date);
+            return Optional.empty();
+        }
+
+        return targetDayRecord;
     }
 
     /**
-     * 2. TARİH ARALIĞI GÖREVİ: Belirli İki Tarih Arasındaki Tüm Resmi Kapanışları Çeker.
-     * Bu metot; geriye dönük 60 günlük doğruluk testi (Backtest) ve toplu mutabakat için kullanılır.
+     * 2. TARİH ARALIĞI GÖREVİ: Belirli İki Tarih Arasındaki Tüm Resmi Kapanışları
+     * Çeker.
+     * Bu metot; geriye dönük 60 günlük doğruluk testi (Backtest) ve toplu mutabakat
+     * için kullanılır.
      *
      * @param fundCode  Fon kodu (Örn: "THF")
      * @param startDate Başlangıç tarihi
@@ -167,18 +205,19 @@ public class TefasClient {
     }
 
     /**
-     * 3. AYRIŞTIRMA GÖREVİ: TEFAS JSON Yanıtını Ayrıştırıp DTO Listesine Dönüştürür.
+     * 3. AYRIŞTIRMA GÖREVİ: TEFAS JSON Yanıtını Ayrıştırıp DTO Listesine
+     * Dönüştürür.
      *
      * Örnek TEFAS JSON Yanıtı:
      * {
-     *   "data": [
-     *     {
-     *       "TARIH": "1726952400000",
-     *       "FIYAT": 3.456789,
-     *       "TEDPAYSAYISI": 150000000.0,
-     *       "PORTFOYBUYUKLUK": 518518350.0
-     *     }
-     *   ]
+     * "data": [
+     * {
+     * "TARIH": "1726952400000",
+     * "FIYAT": 3.456789,
+     * "TEDPAYSAYISI": 150000000.0,
+     * "PORTFOYBUYUKLUK": 518518350.0
+     * }
+     * ]
      * }
      *
      * @param jsonResponse TEFAS'tan dönen ham JSON dizgesi
@@ -237,7 +276,8 @@ public class TefasClient {
             // Tarihe göre artan (kronolojik) sıralama: En eski günden en yeni güne
             dtoList.sort(Comparator.comparing(TefasFundDto::getPriceDate));
 
-            // Eğer listede birden fazla gün varsa günlük getiri oranını hesapla: (P_t - P_{t-1}) / P_{t-1}
+            // Eğer listede birden fazla gün varsa günlük getiri oranını hesapla: (P_t -
+            // P_{t-1}) / P_{t-1}
             for (int i = 1; i < dtoList.size(); i++) {
                 BigDecimal previousPrice = dtoList.get(i - 1).getUnitPrice();
                 BigDecimal currentPrice = dtoList.get(i).getUnitPrice();
@@ -261,7 +301,8 @@ public class TefasClient {
 
     /**
      * TEFAS'ın tarih düğümünü ('TARIH') çözer.
-     * Hem milisaniye damgasını ("1726952400000") hem de gün formatını ("22.09.2026") destekler.
+     * Hem milisaniye damgasını ("1726952400000") hem de gün formatını
+     * ("22.09.2026") destekler.
      */
     private LocalDate parseTefasDate(JsonNode dateNode) {
         if (dateNode == null || dateNode.isMissingNode() || dateNode.isNull()) {

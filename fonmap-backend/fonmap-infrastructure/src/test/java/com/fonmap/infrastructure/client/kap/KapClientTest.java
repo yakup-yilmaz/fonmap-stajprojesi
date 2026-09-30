@@ -172,5 +172,23 @@ class KapClientTest {
         assertFalse(dto.isEmpty());
         assertNotNull(dto.getSha256Hash());
     }
+
+    @Test
+    @DisplayName("7 Fonun Tamamı İçin Otomatik fetchPdf Testi (KAP Keşfi veya Yerel Fallback)")
+    void testFetchPdf_AllSevenFunds() {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı. Bu test atlanıyor.");
+
+        List<String> funds = List.of("THF", "TLY", "TMV", "DOH", "DFI", "KHA", "TTE");
+        for (String code : funds) {
+            KapPdfDto dto = kapClient.fetchPdf(code, null);
+            assertNotNull(dto, code + " için DTO null olamaz");
+            assertEquals(code, dto.getFundCode());
+            assertFalse(dto.isEmpty(), code + " için PDF boş olamaz");
+            assertNotNull(dto.getSha256Hash(), code + " için SHA-256 boş olamaz");
+            System.out.printf(">>> [7 FON BAŞARIYLA ALINDI] Fon: %-4s | Kaynak: %-14s | Dosya: %-25s | Boyut: %7.2f KB | SHA-256: %s%n",
+                    dto.getFundCode(), dto.getSource(), dto.getFileName(), dto.getSizeInKb(), dto.getSha256Hash().substring(0, 16) + "...");
+        }
+    }
 }
 

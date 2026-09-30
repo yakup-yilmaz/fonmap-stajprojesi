@@ -322,6 +322,49 @@ public class PriceService {
         }
     }
 
+    /**
+     * Borsa İstanbul'un bugün seans açıp açmadığını dinamik olarak test eder (Canary Liveness Check).
+     *
+     * 📌 ÇALIŞMA MANTIĞI:
+     * Hükümet bayram tatilini sonradan 9 güne uzattığında veya beklenmedik bir idari tatil ilan edildiğinde,
+     * bu durum takvim tablosunda henüz kayıtlı olmayabilir.
+     * Bu metot; BIST 30'un en yüksek hacimli 5 lokomotif hissesini (THYAO, ISCTR, ASELS, BIMAS, KCHOL) kontrol eder.
+     * Normal seans saatinde (10:05 ve sonrası) bu 5 hissenin 5'inde birden hiçbir fiyat hareketi yoksa
+     * (değişim tam olarak %0.000000 ise), borsa tatil/kapalı demektir.
+     *
+     * @return true ise seans açık ve işlemler akıyor; false ise borsa kapalı / beklenmedik tatil.
+     */
+    public boolean isMarketTradingToday() {
+        try {
+            List<String> benchmarks = List.of("THYAO", "ISCTR", "ASELS", "BIMAS", "KCHOL");
+            int movedStocksCount = 0;
+
+            for (String ticker : benchmarks) {
+                try {
+                    MarketPriceDto quote = getPrice(ticker);
+                    if (quote != null && quote.getDailyChangeRatio() != null) {
+                        // Eğer hissenin fiyatı dünkü kapanıştan farklıysa seans kesinlikle açıktır
+                        if (quote.getDailyChangeRatio().compareTo(BigDecimal.ZERO) != 0) {
+                            movedStocksCount++;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.debug("[PriceService] Liveness testi sırasında {} çekilemedi: {}", ticker, e.getMessage());
+                }
+            }
+
+            // 5 lokomotif hissenin en az 1 tanesi bile oynadıysa borsa canlıdır
+            boolean isOpen = movedStocksCount > 0;
+            log.info("[PriceService] 🩺 Dinamik Borsa Canlılık Testi: Açık mı? -> {} (Fiyatı oynayan lokomotif hisse sayısı: {}/{})",
+                    isOpen, movedStocksCount, benchmarks.size());
+            return isOpen;
+
+        } catch (Exception e) {
+            log.warn("[PriceService] Piyasa canlılık testi yapılırken genel hata, tedbiren açık kabul ediliyor: {}", e.getMessage());
+            return true;
+        }
+    }
+
     private boolean isFx(String symbol) {
         if (symbol == null) return false;
         String s = symbol.trim().toUpperCase(Locale.ROOT);
