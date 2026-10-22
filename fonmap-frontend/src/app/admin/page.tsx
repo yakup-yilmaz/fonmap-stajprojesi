@@ -749,6 +749,18 @@ export default function AdminPage() {
           onReportActivated={() => loadAdminData()}
         />
       )}
+
+      {/* MANUEL PDF YÜKLEME VE DRY-RUN ÖNİZLEME MODALI */}
+      {pdfPreviewModal && (
+        <PdfPreviewModal
+          isOpen={!!pdfPreviewModal}
+          fundCode={pdfPreviewModal.fundCode}
+          file={pdfPreviewModal.file}
+          onClose={() => setPdfPreviewModal(null)}
+          onConfirmUpload={handleConfirmUpload}
+          isUploading={isUploadingPdf}
+        />
+      )}
     </div>
   );
 }
