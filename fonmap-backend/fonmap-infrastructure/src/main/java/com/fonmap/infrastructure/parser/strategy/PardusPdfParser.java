@@ -38,8 +38,6 @@ public class PardusPdfParser implements PdfParserStrategy {
 
     private static final String STRATEGY_NAME = "PARDUS_STRATEGY";
 
-    private static final Set<String> SUPPORTED_FUNDS = Set.of("KHA");
-
     private static final Pattern DATE_PATTERN = Pattern.compile("\\b(\\d{1,2}[./]\\d{1,2}[./]\\d{4})\\b");
 
     private static final Pattern TNV_PATTERN = Pattern.compile(
@@ -49,10 +47,56 @@ public class PardusPdfParser implements PdfParserStrategy {
 
     @Override
     public boolean supports(String fundCode, String managerName) {
-        if (fundCode != null && SUPPORTED_FUNDS.contains(fundCode.toUpperCase().trim())) {
-            return true;
+        if (managerName != null) {
+            String m = managerName.toUpperCase(Locale.ROOT);
+            if (m.contains("PARDUS")) {
+                return true;
+            }
         }
-        return managerName != null && managerName.toUpperCase().contains("PARDUS");
+        if (fundCode != null) {
+            return "KHA".equalsIgnoreCase(fundCode.trim());
+        }
+        return false;
+    }
+
+    @Override
+    public int sniffScore(byte[] pdfContent, String textSample, boolean isLandscape) {
+        // 1. KESİN KURAL: Bu format DİKEY (Portrait) olmak zorundadır.
+        if (isLandscape) {
+            return 0;
+        }
+
+        // 2. Standart SPK Tablo III başlığı içeriyorsa bu Pardus özel formatı değildir!
+        if (textSample != null && (textSample.contains("III-FON PORTFÖY DEĞERİ TABLOSU")
+                || textSample.contains("FON PORTFÖY DEĞERİ TABLOSU"))) {
+            return 0;
+        }
+
+        int score = 20; // Dikey sayfa düzeni taban puanı
+
+        if (textSample != null) {
+            // Pardus unvanı içeriyorsa yüksek güvenilirlik
+            if (textSample.contains("PARDUS")) {
+                score += 80;
+            }
+
+            // Türkçe Sayı Formatı (Nokta binlik, virgül ondalık)
+            if (textSample.matches("(?s).*\\d{1,3}\\.\\d{3},\\d{2}.*") || textSample.contains(",00") || textSample.contains(",50")) {
+                score += 30;
+            }
+
+            // Katılım / Sukuk / Borsa Dışı Repo / Kira Sertifikası Varlık Blokları
+            if (textSample.contains("BORSA DIŞI REPO") || textSample.contains("SUKUK")
+                    || textSample.contains("KİRA SERTİFİKASI")) {
+                score += 30;
+            }
+
+            // Dikey Tablo Sütun Başlık Deseni (İhraççı Kurum + Vadeye Kalan)
+            if (textSample.contains("İHRAÇCI KURUM") || textSample.contains("VADEYE KALAN")) {
+                score += 20;
+            }
+        }
+        return score;
     }
 
     @Override
@@ -89,7 +133,7 @@ public class PardusPdfParser implements PdfParserStrategy {
 
             return ParsedPortfolioReportDto.builder()
                     .fundCode(fundCode != null ? fundCode.toUpperCase() : "KHA")
-                    .reportDate(reportDate != null ? reportDate : LocalDate.now())
+                    .reportDate(reportDate)
                     .totalNetAssetValue(totalNetAssetValue)
                     .stockRatio(stockRatio)
                     .viopCashRatio(viopCashRatio)
@@ -131,7 +175,7 @@ public class PardusPdfParser implements PdfParserStrategy {
                 }
             }
         }
-        return LocalDate.now();
+        return null;
     }
 
     private BigDecimal extractTnv(String[] lines) {
@@ -346,15 +390,29 @@ public class PardusPdfParser implements PdfParserStrategy {
     }
 
     private boolean isHeaderOrSummaryLine(String line) {
-        return line.startsWith("MENKUL KIYMET")
-                || line.startsWith("TOPLAM")
-                || line.startsWith("GRUP TOPLAMI")
-                || line.startsWith("GENEL TOPLAM")
-                || line.contains("BİRİM ALIŞ")
-                || line.contains("RAYİÇ DEĞER")
-                || line.contains("NOMİNAL DEĞER")
-                || line.contains("İHRAÇCI KURUM")
-                || line.contains("VADEYE KALAN")
-                || line.contains("FON PORTFÖY DEĞERİ TABLOSU");
+        String clean = line.toUpperCase(Locale.ROOT)
+                .replace('\u00A0', ' ')
+                .replaceAll("\\s+", " ")
+                .replace("İ", "I").replace("ı", "I")
+                .replace("Ğ", "G").replace("ğ", "G")
+                .replace("Ü", "U").replace("ü", "U")
+                .replace("Ş", "S").replace("ş", "S")
+                .replace("Ö", "O").replace("ö", "O")
+                .replace("Ç", "C").replace("ç", "C");
+
+        return clean.startsWith("MENKUL KIYMET")
+                || clean.contains("TOPLAM")
+                || clean.contains("GRUP TOPLAM")
+                || clean.contains("GENEL TOPLAM")
+                || clean.contains("FON PORTFOY")
+                || clean.contains("FON TOPLAM")
+                || clean.contains("BIRIM ALIS")
+                || clean.contains("RAYIC DEGER")
+                || clean.contains("NOMINAL DEGER")
+                || clean.contains("IHRACCI KURUM")
+                || clean.contains("VADEYE KALAN")
+                || clean.contains("HAZIR DEGER")
+                || clean.contains("ALACAKLAR")
+                || clean.contains("BORCLAR");
     }
 }

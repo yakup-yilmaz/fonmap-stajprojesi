@@ -34,10 +34,10 @@ import java.security.Principal;
  */
 @RestController
 @RequestMapping("/api/v1/auth")
-@RequiredArgsConstructor
 @Slf4j
 @CrossOrigin(origins = "*") // Frontend Next.js için CORS izni
 @Tag(name = "0. Kimlik Doğrulama (Auth Controller)", description = "Admin girişi ve JWT token temin uç noktaları")
+@RequiredArgsConstructor
 public class AuthController {
 
     private final AuthService authService;

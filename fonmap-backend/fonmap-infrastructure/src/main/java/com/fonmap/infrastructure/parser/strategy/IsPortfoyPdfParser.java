@@ -43,8 +43,6 @@ public class IsPortfoyPdfParser implements PdfParserStrategy {
 
     private static final String STRATEGY_NAME = "IS_PORTFOY_STRATEGY";
 
-    private static final Set<String> SUPPORTED_FUNDS = Set.of("TTE");
-
     private static final Pattern DATE_PATTERN = Pattern.compile("\\b(\\d{1,2}[./]\\d{1,2}[./]\\d{4})\\b");
 
     private static final Pattern TNV_PATTERN = Pattern.compile(
@@ -52,16 +50,53 @@ public class IsPortfoyPdfParser implements PdfParserStrategy {
             Pattern.CASE_INSENSITIVE
     );
 
+    private static final Pattern UNIT_PRICE_PATTERN = Pattern.compile(
+            "(?:AY\\s+SONU\\s+PAY\\s+F[İIıi]YAT[Iİıi]|PAY\\s+F[İIıi]YAT[Iİıi])\\s*(?:\\(TL\\))?\\s*[:=-]?\\s*([0-9.,]+)",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE
+    );
+
+    private static final Pattern SHARE_COUNT_PATTERN = Pattern.compile(
+            "(?:KAT[İIıi]LMA\\s+PAY[İIıi]\\s+SAY[İIıi]S[İIıi]|PAY\\s+SAY[İIıi]S[İIıi])\\s*[:=-]?\\s*([0-9.,]+)",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE
+    );
+
     @Override
     public boolean supports(String fundCode, String managerName) {
-        if (fundCode != null && SUPPORTED_FUNDS.contains(fundCode.toUpperCase().trim())) {
-            return true;
-        }
-        if (managerName != null) {
-            String upper = managerName.toUpperCase(Locale.ROOT);
-            return upper.contains("İŞ PORTFÖY") || upper.contains("IS PORTFOY") || upper.contains("IS PORTFOYU");
+        if (fundCode != null) {
+            return "TTE".equalsIgnoreCase(fundCode.trim());
         }
         return false;
+    }
+
+    @Override
+    public int sniffScore(byte[] pdfContent, String textSample, boolean isLandscape) {
+        if (textSample == null) {
+            return 0;
+        }
+
+        // TTE ve özel İş Portföy şablonunun zorunlu imzası: 16-22 haneli Takasbank işlem/saklama kimlik numaralarıdır.
+        // Standart SPK şablonunu kullanan İş Portföy fonlarında (TI2 gibi) bu numaralar yer almaz!
+        boolean hasTakasbankIds = textSample.matches("(?s).*\\b\\d{16,22}\\b.*");
+        boolean isIsPortfoy = textSample.contains("İŞ PORTFÖY") || textSample.contains("IS PORTFOY");
+
+        if (!hasTakasbankIds) {
+            // Takasbank kimlikleri yoksa bu özel TTE şablonu değildir!
+            // TI2 gibi fonların standart SPK Landscape parser'a yönlenmesi için 0 döner.
+            return 0;
+        }
+
+        int score = 80; // Takasbank IDs taban puanı
+
+        if (isIsPortfoy) {
+            score += 100;
+        }
+
+        // İngilizce Sayı ve Ondalık Düzeni (Virgül binlik, nokta ondalık örn: 1,234.56 veya 115.500000)
+        if (textSample.matches("(?s).*\\d{1,3},\\d{3}\\.\\d{2}.*") || textSample.matches("(?s).*\\b\\d+\\.\\d{6}\\b.*")) {
+            score += 50;
+        }
+
+        return score;
     }
 
     @Override
@@ -89,19 +124,23 @@ public class IsPortfoyPdfParser implements PdfParserStrategy {
             BigDecimal totalNetAssetValue = extractTnv(lines);
             BigDecimal stockRatio = extractRatio(lines, "HİSSE");
             BigDecimal viopCashRatio = extractRatio(lines, "VİOP");
+            BigDecimal unitSharePrice = extractUnitPrice(lines);
+            BigDecimal totalShareCount = extractShareCount(lines);
 
             // 2. Alt Varlıkları Çıkar (İngilizce sayı formatı duyarlı)
             List<ParsedHoldingDto> holdings = extractHoldings(lines);
 
-            log.info("[IsPortfoyPdfParser] Ayrıştırma tamamlandı: Fon='{}', Tarih={}, TNV={}, Toplam Varlık={}",
-                    fundCode, reportDate, totalNetAssetValue, holdings.size());
+            log.info("[IsPortfoyPdfParser] Ayrıştırma tamamlandı: Fon='{}', Tarih={}, TNV={}, PayFiyat={}, Toplam Varlık={}",
+                    fundCode, reportDate, totalNetAssetValue, unitSharePrice, holdings.size());
 
             return ParsedPortfolioReportDto.builder()
                     .fundCode(fundCode != null ? fundCode.toUpperCase() : "TTE")
-                    .reportDate(reportDate != null ? reportDate : LocalDate.now())
+                    .reportDate(reportDate)
                     .totalNetAssetValue(totalNetAssetValue)
                     .stockRatio(stockRatio)
                     .viopCashRatio(viopCashRatio)
+                    .unitSharePrice(unitSharePrice)
+                    .totalShareCount(totalShareCount)
                     .holdings(holdings)
                     .build();
         } catch (IOException e) {
@@ -140,7 +179,7 @@ public class IsPortfoyPdfParser implements PdfParserStrategy {
                 }
             }
         }
-        return LocalDate.now();
+        return null;
     }
 
     private BigDecimal extractTnv(String[] lines) {
@@ -173,6 +212,32 @@ public class IsPortfoyPdfParser implements PdfParserStrategy {
             }
         }
         return BigDecimal.ZERO;
+    }
+
+    private BigDecimal extractUnitPrice(String[] lines) {
+        for (String line : lines) {
+            Matcher matcher = UNIT_PRICE_PATTERN.matcher(line);
+            if (matcher.find()) {
+                BigDecimal price = PdfParsingUtils.parseEnglishDecimal(matcher.group(1));
+                if (price.compareTo(BigDecimal.ZERO) > 0) {
+                    return price;
+                }
+            }
+        }
+        return null;
+    }
+
+    private BigDecimal extractShareCount(String[] lines) {
+        for (String line : lines) {
+            Matcher matcher = SHARE_COUNT_PATTERN.matcher(line);
+            if (matcher.find()) {
+                BigDecimal count = PdfParsingUtils.parseEnglishDecimal(matcher.group(1));
+                if (count.compareTo(BigDecimal.ZERO) > 0) {
+                    return count;
+                }
+            }
+        }
+        return null;
     }
 
     private List<ParsedHoldingDto> extractHoldings(String[] lines) {
@@ -358,11 +423,26 @@ public class IsPortfoyPdfParser implements PdfParserStrategy {
     }
 
     private boolean isHeaderOrSummaryLine(String line) {
-        return line.startsWith("MENKUL KIYMET")
-                || line.startsWith("TOPLAM")
-                || line.startsWith("GRUP TOPLAMI")
-                || line.startsWith("GENEL TOPLAM")
-                || line.contains("BİRİM ALIŞ")
-                || line.contains("RAYİÇ DEĞER");
+        String clean = line.toUpperCase(Locale.ROOT)
+                .replace('\u00A0', ' ')
+                .replaceAll("\\s+", " ")
+                .replace("İ", "I").replace("ı", "I")
+                .replace("Ğ", "G").replace("ğ", "G")
+                .replace("Ü", "U").replace("ü", "U")
+                .replace("Ş", "S").replace("ş", "S")
+                .replace("Ö", "O").replace("ö", "O")
+                .replace("Ç", "C").replace("ç", "C");
+
+        return clean.startsWith("MENKUL KIYMET")
+                || clean.contains("TOPLAM")
+                || clean.contains("GRUP TOPLAM")
+                || clean.contains("GENEL TOPLAM")
+                || clean.contains("FON PORTFOY")
+                || clean.contains("FON TOPLAM")
+                || clean.contains("BIRIM ALIS")
+                || clean.contains("RAYIC DEGER")
+                || clean.contains("HAZIR DEGER")
+                || clean.contains("ALACAKLAR")
+                || clean.contains("BORCLAR");
     }
 }

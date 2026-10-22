@@ -38,8 +38,6 @@ public class AtlasPdfParser implements PdfParserStrategy {
 
     private static final String STRATEGY_NAME = "ATLAS_PORTRAIT_STRATEGY";
 
-    private static final Set<String> SUPPORTED_FUNDS = Set.of("DFI");
-
     private static final Pattern DATE_PATTERN = Pattern.compile("\\b(\\d{1,2}[./]\\d{1,2}[./]\\d{4})\\b");
 
     private static final Pattern TNV_PATTERN = Pattern.compile(
@@ -49,10 +47,57 @@ public class AtlasPdfParser implements PdfParserStrategy {
 
     @Override
     public boolean supports(String fundCode, String managerName) {
-        if (fundCode != null && SUPPORTED_FUNDS.contains(fundCode.toUpperCase().trim())) {
-            return true;
+        if (managerName != null) {
+            String m = managerName.toUpperCase(Locale.ROOT);
+            if (m.contains("ATLAS PORTFÖY") || m.contains("ATLAS PORTFOY")) {
+                return true;
+            }
         }
-        return managerName != null && managerName.toUpperCase().contains("ATLAS");
+        if (fundCode != null) {
+            return "DFI".equalsIgnoreCase(fundCode.trim());
+        }
+        return false;
+    }
+
+    @Override
+    public int sniffScore(byte[] pdfContent, String textSample, boolean isLandscape) {
+        // 1. KESİN KURAL: Bu format DİKEY (Portrait) olmak zorundadır.
+        if (isLandscape) {
+            return 0;
+        }
+
+        // 2. Standart SPK Tablo III başlığı içeriyorsa bu Atlas dikey formatı değildir!
+        if (textSample != null && (textSample.contains("III-FON PORTFÖY DEĞERİ TABLOSU")
+                || textSample.contains("III - FON PORTFÖY DEĞERİ TABLOSU"))) {
+            return 0;
+        }
+
+        int score = 20; // Dikey sayfa düzeni taban puanı
+
+        if (textSample != null) {
+            // Atlas Portföy Kurucu veya Yönetici Şirket İmzası
+            if (textSample.contains("ATLAS PORTFÖY") || textSample.contains("ATLAS PORTFOY")) {
+                score += 100;
+            }
+
+            // 18 haneli Takasbank kimliklerinin OLMAMASI
+            boolean hasLongTransactionIds = textSample.matches("(?s).*\\b\\d{16,18}\\b.*");
+            if (!hasLongTransactionIds) {
+                score += 20;
+            }
+
+            // Tabloda birim fiyat sütunu bulunmayan, doğrudan Nominal ve Rayiç Değer içeren dikey tablo deseni
+            if ((textSample.contains("İHRAÇ NOMİNAL") || textSample.contains("PORTFÖY DAĞILIM RAPORU"))
+                    && !textSample.contains("BİRİM ALIŞ")) {
+                score += 30;
+            }
+
+            // İngilizce sayı düzeni (Virgül binlik, nokta ondalık örn: 31,981,435.00)
+            if (textSample.matches("(?s).*\\d{1,3},\\d{3}\\.\\d{2}.*")) {
+                score += 30;
+            }
+        }
+        return score;
     }
 
     @Override
@@ -89,7 +134,7 @@ public class AtlasPdfParser implements PdfParserStrategy {
 
             return ParsedPortfolioReportDto.builder()
                     .fundCode(fundCode != null ? fundCode.toUpperCase() : "DFI")
-                    .reportDate(reportDate != null ? reportDate : LocalDate.now())
+                    .reportDate(reportDate)
                     .totalNetAssetValue(totalNetAssetValue)
                     .stockRatio(stockRatio)
                     .viopCashRatio(viopCashRatio)
@@ -131,7 +176,7 @@ public class AtlasPdfParser implements PdfParserStrategy {
                 }
             }
         }
-        return LocalDate.now();
+        return null;
     }
 
     private BigDecimal extractTnv(String[] lines) {
@@ -249,7 +294,11 @@ public class AtlasPdfParser implements PdfParserStrategy {
         String isinCode = isinOpt.orElse(null);
 
         String tickerCandidate = tokens[0].replaceAll("[^A-Z0-9_]", "").trim();
-        if (tickerCandidate.length() < 2 || tickerCandidate.matches("^\\d+$")) {
+        if (tickerCandidate.length() < 2 || tickerCandidate.matches("^\\d+$")
+                || "GRUP".equals(tickerCandidate) || "TOPLAM".equals(tickerCandidate)
+                || "GENEL".equals(tickerCandidate) || "FON".equals(tickerCandidate)
+                || "PORTFOY".equals(tickerCandidate) || "BORCLAR".equals(tickerCandidate)
+                || "ALACAKLAR".equals(tickerCandidate) || "HAZIR".equals(tickerCandidate)) {
             return null;
         }
 
@@ -323,13 +372,28 @@ public class AtlasPdfParser implements PdfParserStrategy {
     }
 
     private boolean isHeaderOrSummaryLine(String line) {
-        return line.startsWith("MENKUL KIYMET")
-                || line.startsWith("TOPLAM")
-                || line.startsWith("GRUP TOPLAMI")
-                || line.startsWith("GENEL TOPLAM")
-                || line.contains("BİRİM ALIŞ")
-                || line.contains("RAYİÇ DEĞER")
-                || line.contains("İHRAÇ NOMİNAL")
-                || line.contains("FON PORTFÖY DEĞERİ TABLOSU");
+        String clean = line.toUpperCase(Locale.ROOT)
+                .replace('\u00A0', ' ')
+                .replaceAll("\\s+", " ")
+                .replace("İ", "I").replace("ı", "I")
+                .replace("Ğ", "G").replace("ğ", "G")
+                .replace("Ü", "U").replace("ü", "U")
+                .replace("Ş", "S").replace("ş", "S")
+                .replace("Ö", "O").replace("ö", "O")
+                .replace("Ç", "C").replace("ç", "C");
+
+        return clean.startsWith("MENKUL KIYMET")
+                || clean.contains("TOPLAM")
+                || clean.contains("GRUP TOPLAM")
+                || clean.contains("GENEL TOPLAM")
+                || clean.contains("FON PORTFOY")
+                || clean.contains("FON TOPLAM")
+                || clean.contains("BIRIM ALIS")
+                || clean.contains("RAYIC DEGER")
+                || clean.contains("NOMINAL DEGER")
+                || clean.contains("IHRAC NOMINAL")
+                || clean.contains("HAZIR DEGER")
+                || clean.contains("ALACAKLAR")
+                || clean.contains("BORCLAR");
     }
 }

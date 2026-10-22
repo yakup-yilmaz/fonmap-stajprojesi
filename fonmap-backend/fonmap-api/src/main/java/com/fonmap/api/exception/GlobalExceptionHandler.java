@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
@@ -132,7 +133,31 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 5. SON KALE HATA YAKALAYICI: Beklenmeyen Genel Hatalar (Exception)
+     * 5. HATA YAKALAYICI: Dosya Boyut Aşımı (MaxUploadSizeExceededException)
+     * -------------------------------------------------------------------------------------
+     * Kullanıcı veya sistem izin verilen sınırın (25 MB) üzerinde bir dosya yüklemeye çalıştığında yakalar.
+     * HTTP 413 Payload Too Large döner.
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleMaxUploadSizeExceeded(
+            MaxUploadSizeExceededException ex, HttpServletRequest request) {
+
+        log.warn("[GlobalExceptionHandler] Dosya Boyut Aşımı (413): URL='{}' -> {}",
+                request.getRequestURI(), ex.getMessage());
+
+        ApiErrorResponse error = new ApiErrorResponse(
+                LocalDateTime.now(),
+                HttpStatus.PAYLOAD_TOO_LARGE.value(),
+                HttpStatus.PAYLOAD_TOO_LARGE.getReasonPhrase(),
+                "Yüklenen dosya boyutu izin verilen maksimum sınırı (25 MB) aşıyor.",
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(error);
+    }
+
+    /**
+     * 6. SON KALE HATA YAKALAYICI: Beklenmeyen Genel Hatalar (Exception)
      * -------------------------------------------------------------------------------------
      * Öngörülemeyen tüm sunucu içi istisnaları yakalar. Güvenlik açığı yaratmamak için
      * veritabanı şifreleri veya sistem detayları dışarı sızdırılmaz; temiz bir

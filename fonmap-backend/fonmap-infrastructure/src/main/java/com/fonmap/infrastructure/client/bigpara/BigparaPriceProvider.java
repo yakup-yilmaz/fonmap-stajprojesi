@@ -87,16 +87,18 @@ public class BigparaPriceProvider implements PriceProvider {
             }
 
             if (currentPriceDouble <= 0.0 || previousCloseDouble <= 0.0) {
-                throw new PriceProviderException(PROVIDER_NAME, symbol, 
-                        String.format("Geçersiz fiyat: anlık=%.4f, dünkü=%.4f", currentPriceDouble, previousCloseDouble));
+                throw new PriceProviderException(PROVIDER_NAME, symbol,
+                        String.format("Geçersiz fiyat: anlık=%.4f, dünkü=%.4f", currentPriceDouble,
+                                previousCloseDouble));
             }
 
             BigDecimal currentPrice = BigDecimal.valueOf(currentPriceDouble);
             BigDecimal previousClose = BigDecimal.valueOf(previousCloseDouble);
 
-            // Standart DTO fabrikamız ile getiri oranını virgülden sonra 6 basamak hassasiyetle hesaplar
+            // Standart DTO fabrikamız ile getiri oranını virgülden sonra 6 basamak
+            // hassasiyetle hesaplar
             MarketPriceDto dto = MarketPriceDto.of(cleanTicker, currentPrice, previousClose, PROVIDER_NAME);
-            log.debug("[{}] '{}' başarıyla çekildi: Anlık={}, Dünkü={}, Değişim={}", 
+            log.debug("[{}] '{}' başarıyla çekildi: Anlık={}, Dünkü={}, Değişim={}",
                     PROVIDER_NAME, symbol, currentPrice, previousClose, dto.getDailyChangeRatio());
 
             return dto;
@@ -139,7 +141,8 @@ public class BigparaPriceProvider implements PriceProvider {
      * Örneğin: "THYAO.IS" -> "THYAO", "XU100.IS" -> "XU100"
      */
     private String cleanSymbol(String symbol) {
-        if (symbol == null) return "";
+        if (symbol == null)
+            return "";
         String upper = symbol.trim().toUpperCase();
         if (upper.endsWith(".IS")) {
             return upper.substring(0, upper.length() - 3);

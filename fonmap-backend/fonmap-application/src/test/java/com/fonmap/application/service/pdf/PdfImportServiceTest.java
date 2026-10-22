@@ -8,6 +8,7 @@ import com.fonmap.infrastructure.client.kap.dto.KapPdfDto;
 import com.fonmap.infrastructure.parser.dto.ParsedHoldingDto;
 import com.fonmap.infrastructure.parser.dto.ParsedPortfolioReportDto;
 import com.fonmap.infrastructure.parser.factory.PdfParserFactory;
+import com.fonmap.infrastructure.parser.strategy.PdfParserStrategy;
 import com.fonmap.infrastructure.parser.strategy.TeraPdfParser;
 import com.fonmap.infrastructure.repository.*;
 import org.junit.jupiter.api.BeforeEach;
@@ -162,4 +163,74 @@ class PdfImportServiceTest {
         assertThrows(IllegalArgumentException.class, () ->
                 pdfImportService.importPdfReport(dummyPdf, "XYZ", null, null, null));
     }
+
+    @Test
+    @DisplayName("4. Dry-Run Önizleme: DB'ye Yazmadan Zengin Varlık Kırılımı Döner")
+    void testPreviewPdfReport_DryRunSuccess() throws Exception {
+        KapClient kapClient = new KapClient();
+        if (!kapClient.hasLocalSamples()) {
+            return;
+        }
+
+        KapPdfDto kapPdfDto = kapClient.loadFromLocalSample("THF");
+        assertNotNull(kapPdfDto);
+
+        when(fundRepository.findByCode("THF")).thenReturn(Optional.of(testFund));
+
+        com.fonmap.application.service.pdf.dto.PdfPreviewResponse preview =
+                pdfImportService.previewPdfReport(kapPdfDto.getContent(), "THF");
+
+        assertNotNull(preview);
+        assertEquals("THF", preview.getFundCode());
+        assertNotNull(preview.getDetectedParserStrategy());
+        assertTrue(preview.getTotalItemsCount() > 0);
+        assertNotNull(preview.getTotalPortfolioWeight());
+        assertNotNull(preview.getAssetBreakdown());
+        assertNotNull(preview.getAssetBreakdown().getEquity());
+        assertNotNull(preview.getHoldings());
+        assertFalse(preview.getHoldings().isEmpty());
+
+        // KESİN DRY-RUN GÜVENCESİ: Veritabanına hiçbir şey kaydedilmemelidir!
+        verify(fundSnapshotRepository, never()).save(any());
+        verify(holdingRepository, never()).saveAll(any());
+        verify(fundReportRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("5. Tarih Kilidi Testi: Rapor Tarihi Null ise IllegalArgumentException Fırlatılmalı")
+    void testImportPdfReport_ThrowsWhenReportDateIsNull() {
+        PdfParserStrategy mockStrategy = mock(PdfParserStrategy.class);
+        when(mockStrategy.supports(any(), any())).thenReturn(true);
+        when(mockStrategy.getStrategyName()).thenReturn("MOCK_STRATEGY");
+
+        ParsedPortfolioReportDto reportWithoutDate = ParsedPortfolioReportDto.builder()
+                .fundCode("THF")
+                .reportDate(null)
+                .totalNetAssetValue(BigDecimal.valueOf(10_000_000))
+                .holdings(List.of(
+                        ParsedHoldingDto.builder().ticker("THYAO").weightRatio(new BigDecimal("0.20")).build(),
+                        ParsedHoldingDto.builder().ticker("ASELS").weightRatio(new BigDecimal("0.30")).build(),
+                        ParsedHoldingDto.builder().ticker("EREGL").weightRatio(new BigDecimal("0.50")).build()
+                ))
+                .build();
+
+        try {
+            when(mockStrategy.parse(any(), any())).thenReturn(reportWithoutDate);
+        } catch (Exception ignored) {}
+
+        PdfParserFactory customFactory = new PdfParserFactory(List.of(mockStrategy));
+        PdfImportService service = new PdfImportService(
+                fundRepository, fundReportRepository, fundSnapshotRepository,
+                holdingRepository, instrumentRepository, instrumentAliasRepository,
+                customFactory
+        );
+
+        when(fundRepository.findByCode("THF")).thenReturn(Optional.of(testFund));
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                service.importPdfReport(new byte[]{1, 2, 3}, "THF", "url", "sha", null));
+
+        assertTrue(ex.getMessage().contains("rapor tarihi tespit edilemedi"));
+    }
 }
+

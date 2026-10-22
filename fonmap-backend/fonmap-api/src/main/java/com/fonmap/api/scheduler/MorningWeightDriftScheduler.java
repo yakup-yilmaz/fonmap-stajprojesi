@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 
 /**
@@ -33,13 +34,16 @@ import java.util.List;
  * dünkü kapanışa göre tamamen normalize edilmiş taptaze dinamik ağırlıklarla başlar!
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
+@RequiredArgsConstructor
 public class MorningWeightDriftScheduler {
+
+    private static final ZoneId ZONE_ISTANBUL = ZoneId.of("Europe/Istanbul");
 
     private final FundRepository fundRepository;
     private final WeightDriftService weightDriftService;
     private final MarketHolidayRepository marketHolidayRepository;
+    private final com.fonmap.application.service.drift.WeightDriftExecutionTracker weightDriftExecutionTracker;
 
     /**
      * Sabah Açılış Öncesi Ağırlık Kalibrasyon Döngüsü:
@@ -50,16 +54,16 @@ public class MorningWeightDriftScheduler {
      */
     @Scheduled(cron = "0 50 9 * * MON-FRI", zone = "Europe/Istanbul")
     public void runMorningWeightDrift() {
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(ZONE_ISTANBUL);
 
         // 1. ADIM: Tatil Denetimi
         if (marketHolidayRepository.existsByHolidayDate(today)) {
-            log.info("[MorningWeightDriftScheduler] Bugün ({}) borsa tatilidir. Ağırlık kayması kalibrasyonu atlanıyor.", today);
+            log.info("[WeightDrift] [STATUS=SKIPPED] [REASON=MARKET_HOLIDAY] [DATE={}] Bugün borsa tatilidir. Ağırlık kayması atlanıyor.", today);
             return;
         }
 
         long startTime = System.currentTimeMillis();
-        log.info("[MorningWeightDriftScheduler] 🌅 Sabah 09:50 seans öncesi portföy ağırlık kalibrasyonu başlatıldı...");
+        log.info("[WeightDrift] [STATUS=STARTING] [EXECUTION=SCHEDULED_0950] [DATE={}] 🌅 Sabah 09:50 seans öncesi portföy ağırlık kalibrasyonu başlatıldı...", today);
 
         // 2. ADIM: Aktif fonları çek
         List<Fund> activeFunds = fundRepository.findAllActiveFundsOrdered();
@@ -68,20 +72,23 @@ public class MorningWeightDriftScheduler {
         // 3. ADIM: Her fonun portföyündeki hisselerin güncel açılış ağırlıklarını hesapla
         for (Fund fund : activeFunds) {
             try {
-                List<DriftedHoldingDto> driftedHoldings = weightDriftService.calculateDriftForLatestFundSnapshot(fund.getCode());
+                List<DriftedHoldingDto> driftedHoldings = weightDriftService.calibrateAndSaveDriftForLatestFundSnapshot(fund.getCode(), today);
                 processedFunds++;
 
-                log.info("[MorningWeightDriftScheduler] ✅ Fon='{}' | {} adet varlığın T-1 seans açılış ağırlığı kalibre edildi.",
+                log.info("[WeightDrift] [STATUS=SUCCESS] [EXECUTION=SCHEDULED_0950] Fon='{}' | {} adet varlığın T-1 seans açılış ağırlığı kalibre edildi ve veritabanına mühürlendi.",
                         fund.getCode(), driftedHoldings.size());
 
             } catch (Exception e) {
-                log.warn("[MorningWeightDriftScheduler] ⚠️ Fon '{}' için ağırlık kalibrasyonu yapılamadı: {}",
+                log.warn("[WeightDrift] [STATUS=FAILED] [EXECUTION=SCHEDULED_0950] Fon='{}' ağırlık kalibrasyon hatası: {}",
                         fund.getCode(), e.getMessage());
             }
         }
 
+        // 4. ADIM: Başarı durumunu mühürle (Böylece sistem gün içinde yeniden başlasa bile tekrar yapmaz)
+        weightDriftExecutionTracker.markCalibrated(today);
+
         long duration = System.currentTimeMillis() - startTime;
-        log.info("[MorningWeightDriftScheduler] 🎯 Sabah hazırlığı tamamlandı! {} fon saat 10:00 seans açılışına hazır (Süre: {} ms).",
-                processedFunds, duration);
+        log.info("[WeightDrift] [STATUS=SUCCESS] [EXECUTION=SCHEDULED_0950] [DATE={}] 🎯 Sabah hazırlığı tamamlandı! {} fon saat 10:00 seans açılışına hazır (Süre: {} ms).",
+                today, processedFunds, duration);
     }
 }

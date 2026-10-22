@@ -33,4 +33,10 @@ public interface ReconciliationResultRepository extends JpaRepository<Reconcilia
      */
     @Query("SELECT r FROM ReconciliationResult r WHERE r.fund.id = :fundId ORDER BY r.date DESC")
     List<ReconciliationResult> findByFundIdOrderByDateDesc(@Param("fundId") UUID fundId);
+
+    /**
+     * Bir fon için doğrulanmış en son mutabakat seans tarihini döner.
+     */
+    @Query("SELECT MAX(r.date) FROM ReconciliationResult r WHERE r.fund.id = :fundId AND r.isVerified = true")
+    Optional<LocalDate> findLatestVerifiedDateByFundId(@Param("fundId") UUID fundId);
 }

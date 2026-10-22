@@ -21,9 +21,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
- * 3. Resmi Gösterge Döviz Sağlayıcısı: TCMB (Türkiye Cumhuriyet Merkez Bankası) İstemcisi.
+ * 3. Resmi Gösterge Döviz Sağlayıcısı: TCMB (Türkiye Cumhuriyet Merkez Bankası)
+ * İstemcisi.
  * 
- * TCMB'nin halka açık 'https://www.tcmb.gov.tr/kurlar/today.xml' bültenini okur.
+ * TCMB'nin halka açık 'https://www.tcmb.gov.tr/kurlar/today.xml' bültenini
+ * okur.
  * TEFAS fon mutabakatlarında kullanılan resmi USD/TRY, EUR/TRY kurlarını çeker.
  */
 @Slf4j
@@ -32,28 +34,32 @@ public class TcmbPriceProvider implements PriceProvider {
 
     private static final String PROVIDER_NAME = "TCMB";
     private static final String TCMB_URL = "https://www.tcmb.gov.tr/kurlar/today.xml";
-    private static final String TCMB_HOME_URL = "https://www.tcmb.gov.tr";
     private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-    private static final java.util.regex.Pattern POLICY_RATE_PATTERN = 
-            java.util.regex.Pattern.compile("repo ihale faiz oranının yüzde\\s+([0-9]+(?:,[0-9]+)?)", java.util.regex.Pattern.CASE_INSENSITIVE);
-    private static final java.util.regex.Pattern FALLBACK_RATE_PATTERN = 
-            java.util.regex.Pattern.compile("politika faizi(?: olan [^.]+)? yüzde\\s+([0-9]+(?:,[0-9]+)?)", java.util.regex.Pattern.CASE_INSENSITIVE);
-    private static final BigDecimal DEFAULT_POLICY_RATE = new BigDecimal("0.370000");
-
     private final RestClient restClient;
+
+    @org.springframework.beans.factory.annotation.Value("${fonmap.macro.policy-rate:0.370000}")
+    private BigDecimal policyRate = new BigDecimal("0.370000");
 
     public TcmbPriceProvider() {
         this.restClient = RestClient.builder()
                 .defaultHeader(HttpHeaders.USER_AGENT, USER_AGENT)
-                .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_XML_VALUE, MediaType.TEXT_XML_VALUE, MediaType.TEXT_HTML_VALUE, "*/*")
+                .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_XML_VALUE, MediaType.TEXT_XML_VALUE, "*/*")
+                .build();
+    }
+
+    public TcmbPriceProvider(BigDecimal policyRate) {
+        this.policyRate = policyRate != null ? policyRate : new BigDecimal("0.370000");
+        this.restClient = RestClient.builder()
+                .defaultHeader(HttpHeaders.USER_AGENT, USER_AGENT)
+                .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_XML_VALUE, MediaType.TEXT_XML_VALUE, "*/*")
                 .build();
     }
 
     @Override
     public MarketPriceDto getPrice(String symbol) {
         if (isRepoOrInterestSymbol(symbol)) {
-            return fetchPolicyRate();
+            return fetchPolicyRate(symbol);
         }
 
         String currencyCode = normalizeSymbol(symbol);
@@ -63,7 +69,7 @@ public class TcmbPriceProvider implements PriceProvider {
         MarketPriceDto dto = allRates.get(currencyCode);
 
         if (dto == null) {
-            throw new PriceProviderException(PROVIDER_NAME, symbol, 
+            throw new PriceProviderException(PROVIDER_NAME, symbol,
                     String.format("TCMB bülteninde '%s' para birimi bulunamadı.", currencyCode));
         }
 
@@ -76,17 +82,15 @@ public class TcmbPriceProvider implements PriceProvider {
             return List.of();
         }
 
-        // XML bültenini tek bir HTTP isteği ile alıp tüm kurları hafızaya yükler (N istek atmaz)
+        // XML bültenini tek bir HTTP isteği ile alıp tüm kurları hafızaya yükler (N
+        // istek atmaz)
         Map<String, MarketPriceDto> allRates = fetchAllRates();
         List<MarketPriceDto> result = new ArrayList<>();
         MarketPriceDto policyRateDto = null;
 
         for (String symbol : symbols) {
             if (isRepoOrInterestSymbol(symbol)) {
-                if (policyRateDto == null) {
-                    policyRateDto = fetchPolicyRate();
-                }
-                result.add(policyRateDto);
+                result.add(fetchPolicyRate(symbol));
                 continue;
             }
 
@@ -103,49 +107,35 @@ public class TcmbPriceProvider implements PriceProvider {
     }
 
     /**
-     * TCMB'nin güncel politika (1 hafta vadeli repo ihale) faiz oranını çeker.
-     * Şartname Madde 4.5 uyarınca günlük tahakkuk oranını (gunluk_getiri = yillik_faiz / 365) hesaplar.
+     * TCMB'nin resmi politika (1 hafta vadeli repo ihale) faiz oranını döner.
+     * Şartname Madde 4.5 uyarınca günlük tahakkuk oranını (gunluk_getiri =
+     * yillik_faiz / 365) hesaplar.
      */
     public MarketPriceDto fetchPolicyRate() {
-        log.debug("[{}] TCMB politika ve repo faiz oranı çekiliyor...", PROVIDER_NAME);
-        try {
-            String html = restClient.get()
-                    .uri(TCMB_HOME_URL)
-                    .retrieve()
-                    .body(String.class);
+        return fetchPolicyRate("REPO");
+    }
 
-            if (html != null && !html.isBlank()) {
-                java.util.regex.Matcher matcher = POLICY_RATE_PATTERN.matcher(html);
-                if (!matcher.find()) {
-                    matcher = FALLBACK_RATE_PATTERN.matcher(html);
-                }
-
-                if (matcher.find()) {
-                    String rateStr = matcher.group(1).replace(',', '.').trim();
-                    double ratePercent = Double.parseDouble(rateStr);
-                    // Yıllık oran: %37 -> 0.37
-                    BigDecimal annualRate = BigDecimal.valueOf(ratePercent)
-                            .divide(BigDecimal.valueOf(100), 6, java.math.RoundingMode.HALF_UP);
-
-                    log.info("[{}] Güncel politika faizi TCMB'den otomatik çekildi: %{} (Yıllık: {})", 
-                            PROVIDER_NAME, rateStr, annualRate);
-                    return MarketPriceDto.ofRepo("REPO", annualRate, PROVIDER_NAME);
-                }
-            }
-        } catch (Exception e) {
-            log.warn("[{}] TCMB faiz oranı çekilemedi, varsayılan faiz ({}) kullanılacak: {}", 
-                    PROVIDER_NAME, DEFAULT_POLICY_RATE, e.getMessage());
-        }
-
-        log.info("[{}] Varsayılan politika/repo faiz oranı kullanılıyor: {}", PROVIDER_NAME, DEFAULT_POLICY_RATE);
-        return MarketPriceDto.ofRepo("REPO", DEFAULT_POLICY_RATE, PROVIDER_NAME);
+    public MarketPriceDto fetchPolicyRate(String symbol) {
+        String sym = symbol != null ? symbol.trim().toUpperCase(Locale.ROOT) : "REPO";
+        log.info("[{}] Resmi TCMB politika ve repo faiz oranı uygulandı: %{} (Yıllık: {}, Sembol: {})",
+                PROVIDER_NAME, policyRate.multiply(BigDecimal.valueOf(100)), policyRate, sym);
+        return MarketPriceDto.ofRepo(sym, policyRate, PROVIDER_NAME);
     }
 
     private boolean isRepoOrInterestSymbol(String symbol) {
-        if (symbol == null) return false;
+        if (symbol == null)
+            return false;
         String s = symbol.trim().toUpperCase(Locale.ROOT);
-        return s.equals("REPO") || s.equals("FAIZ") || s.equals("TRY_REPO") 
-                || s.equals("OVERNIGHT") || s.equals("OVERNIGHT_REPO") || s.equals("POLICY_RATE");
+        return s.equals("REPO") || s.equals("FAIZ") || s.equals("TRY_REPO")
+                || s.equals("OVERNIGHT") || s.equals("OVERNIGHT_REPO") || s.equals("POLICY_RATE")
+                || s.equals("TMM") || s.equals("BPP") || s.equals("TPP")
+                || s.contains("TAKASBANK") || s.contains("MEVDUAT")
+                || s.contains("TEMINAT") || s.contains("TEMİNAT") || s.equals("VIOP")
+                || isBondOrBillIsin(s);
+    }
+
+    private static boolean isBondOrBillIsin(String s) {
+        return s.matches("^TR[FTPSKB][A-Z0-9_]+$");
     }
 
     @Override
@@ -154,7 +144,8 @@ public class TcmbPriceProvider implements PriceProvider {
     }
 
     /**
-     * TCMB today.xml dosyasını indirir ve tüm döviz kurlarını DOM ile ayrıştırıp haritaya dönüştürür.
+     * TCMB today.xml dosyasını indirir ve tüm döviz kurlarını DOM ile ayrıştırıp
+     * haritaya dönüştürür.
      */
     public Map<String, MarketPriceDto> fetchAllRates() {
         try {
@@ -232,7 +223,8 @@ public class TcmbPriceProvider implements PriceProvider {
                         }
 
                         // Resmi fon değerlemesinde 'ForexSelling' (Döviz Satış Kuru) esastır.
-                        // TCMB günlük tek bülten olduğu için dünkü kapanış bilinmediğinde değişim 0'dır.
+                        // TCMB günlük tek bülten olduğu için dünkü kapanış bilinmediğinde değişim
+                        // 0'dır.
                         MarketPriceDto dto = MarketPriceDto.of(code, forexSelling, forexSelling, PROVIDER_NAME);
                         rates.put(code.toUpperCase(Locale.ROOT), dto);
 
@@ -262,7 +254,8 @@ public class TcmbPriceProvider implements PriceProvider {
      * Örn: "USDTRY", "USD/TRY", "USDTRY=X", "USD" -> "USD"
      */
     private String normalizeSymbol(String symbol) {
-        if (symbol == null) return "";
+        if (symbol == null)
+            return "";
         String s = symbol.trim().toUpperCase(Locale.ROOT);
         if (s.endsWith("=X")) {
             s = s.substring(0, s.length() - 2);

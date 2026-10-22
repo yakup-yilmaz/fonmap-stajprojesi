@@ -36,24 +36,32 @@ import java.util.Optional;
  * 3. TMV - Tera Portföy Temettü Ödeyen Şirketler Fonu (Tera Landscape Parser)
  * 4. DOH - Deniz Portföy Hisse Senedi Fonu (Tera Landscape Parser)
  * 5. DFI - Deniz Portföy İkinci Hisse Senedi Fonu (Atlas Portrait Parser)
- * 6. KHA - Kuveyt Türk Portföy Hisse Senedi Fonu (Pardus Parser)
+ * 6. KHA - Pardus Portföy Hisse Senedi Fonu (Pardus Parser)
  * 7. TTE - İş Portföy BİST Teknoloji Ağırlıklı Fonu (İş Portföy Parser)
  *
  * Bu sınıf; `samples/` dizinindeki 7 fonun gerçek KAP PDF raporlarını tarar, veritabanında
  * snapshot'ı eksik olan tüm fonları eksiksiz içeri aktarır ve 7 fonun tamamı için
  * canlı getiri motorunu çalıştırır.
  */
+/**
+ * @deprecated Bu sınıfın tohumlama görevi Flyway V9 migration'ına (V9__seed_showcase_funds.sql)
+ * ve açılış mutabakat telafisi StartupCatchupRunner bileşenine devredilmiştir.
+ * Varsayılan olarak kapalıdır (fonmap.sample-data.enabled=false).
+ */
+@Deprecated
 @Component
-@RequiredArgsConstructor
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "fonmap.sample-data.enabled", havingValue = "true", matchIfMissing = false)
 @Slf4j
+@RequiredArgsConstructor
 public class SampleDataInitializer implements ApplicationRunner {
 
     private final FundRepository fundRepository;
     private final PdfImportService pdfImportService;
     private final FundSnapshotRepository fundSnapshotRepository;
     private final ReturnCalculationService returnCalculationService;
+    private final com.fonmap.infrastructure.repository.EstimateRunRepository estimateRunRepository;
 
-    // Sistemdeki 7 fon ve karşılık gelen gerçek KAP örnek PDF dosyaları eşleşmesi
+    // Sistemdeki 8 fon ve karşılık gelen gerçek KAP örnek PDF dosyaları eşleşmesi
     private static final Map<String, String> FUND_PDF_MAP = Map.of(
             "THF", "THF_2026_08.pdf",
             "TLY", "TLY_2026_08.pdf",
@@ -61,7 +69,8 @@ public class SampleDataInitializer implements ApplicationRunner {
             "DOH", "DOH_2026_08.pdf",
             "DFI", "DFI_2026_09.pdf",
             "KHA", "KHA_2026_08.pdf",
-            "TTE", "TTE_2026_08.pdf"
+            "TTE", "TTE_2026_08.pdf",
+            "TI2", "TI2_2026_09.pdf"
     );
 
     @Override
@@ -73,14 +82,23 @@ public class SampleDataInitializer implements ApplicationRunner {
             // 1. ADIM: 7 Fonun tamamının portföy snapshot'larını doğrula, eksikleri PDF'ten yükle
             ensureAllSevenFundsLoaded();
 
-            // 2. ADIM: Tüm aktif fonlar için getiri motorunu sırayla çalıştır
+            // 2. ADIM: Tüm aktif fonlar için getiri motorunu sırayla çalıştır ve Redis'i ısıt
             log.info("[SampleDataInitializer] -----------------------------------------------------------");
             log.info("[SampleDataInitializer] 🧪 7 FON CANLI DEĞERLEME & REDIS ÖNBELLEK TESTİ YÜRÜTÜLÜYOR...");
             log.info("[SampleDataInitializer] -----------------------------------------------------------");
 
+            LocalDateTime startOfDay = java.time.LocalDate.now().atStartOfDay();
+            LocalDateTime endOfDay = java.time.LocalDate.now().atTime(23, 59, 59);
+
             List<Fund> activeFunds = fundRepository.findAllActiveFundsOrdered();
             for (Fund fund : activeFunds) {
                 try {
+                    var existingEstimates = estimateRunRepository.findEstimateHistory(fund.getId(), startOfDay, endOfDay);
+                    if (!existingEstimates.isEmpty()) {
+                        log.info("[SampleDataInitializer] [STATUS=SKIPPED] [REASON=ALREADY_EXISTS] Fon='{}' için bugünün tahmini zaten mevcut.", fund.getCode());
+                        continue;
+                    }
+
                     FundEstimateDto estimate = returnCalculationService.calculateAndSave(fund.getCode());
                     log.info("[SampleDataInitializer] 📈 Fon='{}' | Tahmin=%{} | Fiyat={} TL | Kapsama=%{} | Güven={}",
                             fund.getCode(),
@@ -109,7 +127,8 @@ public class SampleDataInitializer implements ApplicationRunner {
         String[] possibleSampleDirs = {
                 "../samples",
                 "samples",
-                "c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples"
+                System.getProperty("user.dir") + File.separator + "samples",
+                System.getProperty("user.dir") + File.separator + ".." + File.separator + "samples"
         };
 
         File samplesDir = null;

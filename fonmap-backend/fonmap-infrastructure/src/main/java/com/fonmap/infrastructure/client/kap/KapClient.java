@@ -8,18 +8,27 @@ import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.netty.http.client.HttpClient;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.net.URI;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * KapClient — KAP Portföy Dağılım Raporu İndirici ve Yerel Örnek Yedeği İstemcisi
@@ -54,6 +63,7 @@ import java.util.List;
 public class KapClient {
 
     private final WebClient webClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * Varsayılan yapıcı metot.
@@ -78,24 +88,39 @@ public class KapClient {
     }
 
     /**
-     * Akıllı Getirici (Smart Orchestrator):
-     * 1. Eğer 'pdfUrl' verilmişse doğrudan o URL'den indirir.
-     * 2. Eğer 'pdfUrl' null/boş ise (Otomatik Keşif Modu - T3.1/T3.2):
-     *    KAP bildirim sorgulama servisini tarayarak en güncel "Portföy Dağılım Raporu"
-     *    bildirimini ve ekli PDF linkini dinamik olarak keşfeder ve indirir.
-     * 3. KAP erişilemezse veya bildirim bulunamazsa yerel 'samples/' klasöründeki
-     *    örnek yedeğe (fallback) geçer.
-     *
-     * @param fundCode Fon kodu (örn: "THF", "TLY", "TTE", "DFI")
-     * @param pdfUrl   KAP bildirim ekindeki PDF linki (opsiyonel / null olabilir)
-     * @return Doldurulmuş ve SHA-256'sı hesaplanmış KapPdfDto nesnesi
+     * Akıllı Getirici (Smart Orchestrator) — Geriye dönük uyumluluk için.
      */
     public KapPdfDto fetchPdf(String fundCode, String pdfUrl) {
+        return fetchPdf(fundCode, null, pdfUrl);
+    }
+
+    /**
+     * Akıllı Getirici (Smart Orchestrator) — Geriye dönük uyumluluk için.
+     */
+    public KapPdfDto fetchPdf(String fundCode, String managerName, String pdfUrl) {
+        return fetchPdf(fundCode, managerName, pdfUrl, null);
+    }
+
+    /**
+     * Akıllı Getirici (Smart Orchestrator):
+     * 1. Eğer 'pdfUrl' verilmişse öncelikle doğrudan o URL'den indirmeyi dener.
+     * 2. Eğer 'pdfUrl' null/boş ise (Otomatik Keşif Modu):
+     *    KAP bildirim sorgulama servisini tarayarak hedef fon, yönetici ve unvan filtresiyle
+     *    en güncel "Portföy Dağılım Raporu" bildirimini ve ekli PDF linkini dinamik olarak keşfeder ve indirir.
+     * 3. Asla yerel sample dosyalarına kaçmaz; canlı KAP'ta rapor yoksa açıklayıcı hata fırlatır.
+     *
+     * @param fundCode    Fon kodu (örn: "THF", "TLY", "TTE", "DFI", "BDY", "GAE")
+     * @param managerName Yönetici portföy şirketi adı (örn: "İş Portföy Yönetimi A.Ş.", opsiyonel)
+     * @param pdfUrl      KAP bildirim ekindeki PDF linki (opsiyonel / null olabilir)
+     * @param fundTitle   Fonun tam resmi unvanı (opsiyonel / null olabilir, KAP çapraz doğrulamasında kullanılır)
+     * @return Doldurulmuş ve SHA-256'sı hesaplanmış KapPdfDto nesnesi
+     */
+    public KapPdfDto fetchPdf(String fundCode, String managerName, String pdfUrl, String fundTitle) {
         if (fundCode == null || fundCode.trim().isEmpty()) {
             throw new IllegalArgumentException("[KapClient] Fon kodu boş olamaz!");
         }
 
-        String normalizedCode = fundCode.trim().toUpperCase();
+        String normalizedCode = fundCode.trim().toUpperCase(Locale.ROOT);
 
         // 1. Manuel / Belirli bir URL verilmişse öncelikle doğrudan oradan indirmeyi dene
         if (pdfUrl != null && !pdfUrl.trim().isEmpty()) {
@@ -103,75 +128,200 @@ public class KapClient {
                 log.info("[KapClient] Doğrudan URL indirmesi başlatılıyor: Fon='{}', URL='{}'", normalizedCode, pdfUrl);
                 return downloadFromUrl(normalizedCode, pdfUrl.trim());
             } catch (Exception e) {
-                log.warn("[KapClient] Doğrudan indirme başarısız oldu ({}). Yerel yedeğe (samples/) geçiliyor...", e.getMessage());
-                if (hasLocalSamples()) {
-                    return loadFromLocalSample(normalizedCode);
-                }
+                log.warn("[KapClient] Doğrudan URL indirmesi başarısız oldu ({}).", e.getMessage());
             }
         }
 
-        // 2. Otomatik Keşif Modu (T3.1 & T3.2): URL belirtilmemişse KAP'tan fon koduna göre en son raporu bul ve indir
+        // 2. Otomatik Keşif Modu: URL belirtilmemişse KAP Resmi API ve tarayıcı akışlarıyla en son raporu ara
         if (pdfUrl == null || pdfUrl.trim().isEmpty()) {
             try {
-                log.info("[KapClient] 🔍 Otomatik KAP keşfi başlatılıyor: Fon='{}'...", normalizedCode);
-                KapPdfDto discoveredDto = discoverAndDownloadLatestPdf(normalizedCode);
+                log.info("[KapClient] 🔍 Otomatik KAP canlı keşfi başlatılıyor: Fon='{}', Yönetici='{}', Unvan='{}'...",
+                        normalizedCode, managerName, fundTitle);
+                KapPdfDto discoveredDto = discoverAndDownloadLatestPdf(normalizedCode, managerName, fundTitle);
                 if (discoveredDto != null && !discoveredDto.isEmpty()) {
                     log.info("[KapClient] 🎯 Otomatik keşif BAŞARILI: Fon='{}', Dosya='{}', Boyut={} KB",
                             normalizedCode, discoveredDto.getFileName(), String.format("%.2f", discoveredDto.getSizeInKb()));
                     return discoveredDto;
                 }
             } catch (Exception e) {
-                log.warn("[KapClient] Otomatik KAP keşfi başarısız/sonuçsuz ({}). Yerel yedeğe (samples/) geçiliyor...",
-                        e.getMessage());
+                log.warn("[KapClient] Otomatik KAP keşfi başarısız/sonuçsuz: Fon='{}' -> {}", normalizedCode, e.getMessage());
             }
         }
 
-        // 3. Canlı başarısız olduysa veya KAP erişilemezse yerel 'samples/' klasöründen yükle (Fallback)
-        if (hasLocalSamples()) {
-            log.info("[KapClient] Canlı veri temin edilemedi, yerel örnek dosya aranıyor: Fon='{}'", normalizedCode);
-            return loadFromLocalSample(normalizedCode);
-        }
-
+        // 3. Canlıda bulunamadıysa temiz ve yönlendirici hata fırlat
         throw new IllegalStateException(String.format(
-                "[KapClient] '%s' fonu için PDF temin edilemedi. Canlı URL: %s, yerel 'samples/' klasörü mevcut değil.",
-                normalizedCode, (pdfUrl != null ? pdfUrl : "otomatik")));
+                "KAP'ta '%s' fonu için yayınlanmış güncel bir portföy dağılım raporu bulunamadı. Lütfen yönetim panelindeki 'PDF Yükle' butonu ile fonun aylık dağılım PDF'ini doğrudan sisteme aktarınız.",
+                normalizedCode));
     }
 
     /**
-     * T3.1 & T3.2: Tam Otomatik KAP Bildirim Keşif ve İndirme Motoru
-     * =============================================================
-     * 1. KAP'ın bildirim sorgulama servisine fon kodu ile istek atar.
-     * 2. Gelen HTML tablosundan en güncel "Portföy Dağılım Raporu" bildirim ID'sini yakalar.
-     * 3. Bildirim detay sayfasından resmi ek dosya (/api/file/download/...) indirme linkini bulur.
-     * 4. PDF'i indirir, kriptografik SHA-256 özetini üretir.
-     *
-     * @param fundCode Fon kodu (örn: "DFI", "THF")
-     * @return KapPdfDto veya bulunamazsa null
+     * Geriye dönük uyumluluk için fon kodu ile keşif.
      */
     public KapPdfDto discoverAndDownloadLatestPdf(String fundCode) {
-        String searchUrl = "https://www.kap.org.tr/tr/bildirim-sorgu-sonuc?srcbar=Y&cmp=N&cat=2&kw="
-                + fundCode + "&slf=ALL";
+        return discoverAndDownloadLatestPdf(fundCode, null);
+    }
 
+    /**
+     * Geriye dönük uyumluluk için fon kodu ve yönetici ile keşif.
+     */
+    public KapPdfDto discoverAndDownloadLatestPdf(String fundCode, String managerName) {
+        return discoverAndDownloadLatestPdf(fundCode, managerName, null);
+    }
+
+    /**
+     * SIFIR LİSTE (ZERO-MEMORY) TEKİL FON ÇÖZÜMLEME:
+     * Bellekte hiçbir fon listesi veya önbellek tutulmaz (0 MB RAM).
+     * Yalnızca aranan fon kodu (örn: "GAE") için KAP'ın fon sayfasına bağlanır,
+     * hedef fon kodunu yakaladığı anda regex aramayı tamamlar ve tekil MKK fundOid'sini döner.
+     */
+    public String findSingleFundOid(String fundCode) {
+        if (fundCode == null || fundCode.trim().isEmpty()) {
+            return null;
+        }
+        String cleanCode = fundCode.trim().toUpperCase(Locale.ROOT);
+
+        // 1. Yatırım Fonları kataloğunda tekil ara
+        String oid = scanPageForSingleFundOid("https://www.kap.org.tr/tr/YatirimFonlari/YF", cleanCode);
+        if (oid == null) {
+            // 2. Borsa Yatırım Fonları kataloğunda tekil ara
+            oid = scanPageForSingleFundOid("https://www.kap.org.tr/tr/YatirimFonlari/BYF", cleanCode);
+        }
+        return oid;
+    }
+
+    private String scanPageForSingleFundOid(String pageUrl, String targetFundCode) {
         try {
-            // 1. ADIM: Bildirim listesi sayfasını çek (Tarayıcı kimliğiyle)
-            String searchHtml = webClient.get()
-                    .uri(searchUrl)
+            String pageHtml = webClient.get()
+                    .uri(pageUrl)
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                     .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                    .header("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7")
                     .retrieve()
                     .bodyToMono(String.class)
                     .block(Duration.ofSeconds(15));
 
-            if (searchHtml == null || searchHtml.isEmpty()) {
-                log.warn("[KapClient] KAP sorgu yanıtı boş döndü: {}", searchUrl);
+            if (pageHtml == null || pageHtml.isEmpty()) return null;
+
+            // Sadece aranan fona özgü fundOid regex'i:
+            // "fundOid":"33E5FED7E84700EAE0530A4A622B2AEA","fundId":"345","fundCode":"GAE"
+            java.util.regex.Pattern re = java.util.regex.Pattern.compile(
+                    "\\\\?\"fundOid\\\\?\":\\s*\\\\?\"([A-Fa-f0-9]+)\\\\?\"[^{}]*?\\\\?\"fundCode\\\\?\":\\s*\\\\?\"" + targetFundCode + "\\\\?\"");
+            java.util.regex.Matcher m = re.matcher(pageHtml);
+            if (m.find()) {
+                String fundOid = m.group(1);
+                log.info("[KapClient] 🎯 KAP'tan tekil fon kimliği (fundOid) anında çözümlendi: Fon='{}' -> {}", targetFundCode, fundOid);
+                return fundOid;
+            }
+        } catch (Exception e) {
+            log.warn("[KapClient] '{}' üzerinden fon kimliği sorgulanırken hata: {}", pageUrl, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * KAP Resmi REST API'sini (byCriteria) sorgulayarak hedef fonun en son
+     * "Portföy Dağılım Raporu" bildirim ID'sini döner.
+     */
+    public String discoverLatestDisclosureViaOfficialApi(String fundCode) {
+        String fundOid = findSingleFundOid(fundCode);
+        if (fundOid == null) {
+            log.warn("[KapClient] Fon '{}' için KAP resmi fundOid kimliği çözümlenemedi.", fundCode);
+            return null;
+        }
+
+        try {
+            LocalDate today = LocalDate.now();
+            LocalDate fromDate = today.minusDays(120);
+
+            String postBody = String.format("""
+                {
+                  "fromDate": "%s",
+                  "toDate": "%s",
+                  "fundTypeList": ["YF", "BYF", "EYF"],
+                  "fundOidList": ["%s"],
+                  "mkkMemberOidList": [],
+                  "passiveFundOidList": [],
+                  "disclosureClass": "",
+                  "isLate": "",
+                  "subjectList": [],
+                  "discIndex": [],
+                  "fromSrc": false,
+                  "srcCategory": ""
+                }
+                """, fromDate, today, fundOid);
+
+            String responseJson = webClient.post()
+                    .uri("https://www.kap.org.tr/tr/api/disclosure/funds/byCriteria")
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept-Language", "tr-TR,tr;q=0.9")
+                    .bodyValue(postBody)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block(Duration.ofSeconds(15));
+
+            if (responseJson == null || responseJson.isBlank()) {
                 return null;
             }
 
-            // 2. ADIM: HTML tablosundan en son "Portföy Dağılım Raporu" bildirim ID'sini ayıkla
-            String disclosureId = extractLatestDisclosureId(searchHtml);
+            JsonNode rootNode = objectMapper.readTree(responseJson);
+            if (!rootNode.isArray()) {
+                return null;
+            }
+
+            for (JsonNode item : rootNode) {
+                String subject = item.path("subject").asText("");
+                String summary = item.path("summary").asText("");
+                String normSub = normalizeTurkish(subject + " " + summary);
+
+                if (normSub.contains("portfoy dagilim")) {
+                    if (normSub.contains("toplam gider") || normSub.contains("gider bilgileri") || normSub.contains("komisyon")) {
+                        continue;
+                    }
+
+                    long disclosureIndex = item.path("disclosureIndex").asLong(0);
+                    if (disclosureIndex > 0) {
+                        log.info("[KapClient] 🚀 KAP Resmi API'sinden en güncel Portföy Dağılım Raporu bulundu: Fon='{}', Bildirim ID={}, Tarih='{}', Özet='{}'",
+                                fundCode, disclosureIndex, item.path("publishDate").asText(), summary);
+                        return String.valueOf(disclosureIndex);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[KapClient] KAP resmi byCriteria API sorgusu başarısız: Fon='{}' -> {}", fundCode, e.getMessage());
+        }
+        return null;
+    }
+
+    public KapPdfDto discoverAndDownloadLatestPdf(String fundCode, String managerName, String fundTitle) {
+        try {
+            // 1. ADIM: Bildirim ID'sini öncelikle KAP Resmi REST API'sinden (byCriteria) sorgula
+            String disclosureId = discoverLatestDisclosureViaOfficialApi(fundCode);
+
+            // 2. ADIM: Eğer resmi API'de bulunamazsa legacy web arama rotalarına düş
             if (disclosureId == null) {
-                log.warn("[KapClient] Fon '{}' için 'Portföy Dağılım Raporu' bildirimi bulunamadı.", fundCode);
+                log.info("[KapClient] Fon '{}' resmi API'de bulunamadı, HTML arama rotaları taranıyor...", fundCode);
+                String searchUrl = "https://www.kap.org.tr/tr/bildirim-sorgu-sonuc?srcbar=Y&cmp=N&cat=2&kw="
+                        + fundCode + "&slf=ALL";
+                String searchHtml = webClient.get()
+                        .uri(searchUrl)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                        .retrieve()
+                        .bodyToMono(String.class)
+                        .block(Duration.ofSeconds(10));
+
+                if (searchHtml != null && !searchHtml.isEmpty()) {
+                    disclosureId = extractLatestDisclosureId(searchHtml, fundCode, managerName, fundTitle);
+                }
+                if (disclosureId == null) {
+                    disclosureId = discoverFromSearchRoute(fundCode, managerName, fundTitle);
+                }
+            }
+
+            if (disclosureId == null) {
+                log.warn("[KapClient] Fon '{}' (Yönetici: '{}', Unvan: '{}') için KAP'ta henüz eşleşen 'Portföy Dağılım Raporu' bildirimi bulunamadı.",
+                        fundCode, managerName, fundTitle);
                 return null;
             }
 
@@ -193,15 +343,8 @@ public class KapClient {
                 return null;
             }
 
-            log.info("[KapClient] 📥 Ek PDF indirme linki yakalandı: {}", pdfDownloadUrl);
-
-            // 4. ADIM: PDF'i indir
-            byte[] bytes = webClient.get()
-                    .uri(pdfDownloadUrl)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .retrieve()
-                    .bodyToMono(byte[].class)
-                    .block(Duration.ofSeconds(25));
+            // 4. ADIM: PDF'i indir (Bağlantı kopmalarına dayanıklı çift motor)
+            byte[] bytes = downloadPdfBytes(pdfDownloadUrl);
 
             if (bytes == null || bytes.length == 0) {
                 throw new IllegalStateException("İndirilen PDF dosyası boş: " + pdfDownloadUrl);
@@ -226,10 +369,184 @@ public class KapClient {
     }
 
     /**
-     * KAP bildirim sorgu tablosundan "Portföy Dağılım Raporu" satırındaki bildirim ID'sini ayıklar.
+     * Türkçe karakter ve Unicode bileşimlerini (örn: İ/i, ı/i, birleşik noktalı harfler)
+     * temizleyerek tam eşleşme sağlayan normalize edici.
+     */
+    private String normalizeTurkish(String text) {
+        if (text == null) return "";
+        String lower = text.toLowerCase(Locale.ROOT)
+                .replace('ı', 'i')
+                .replace('İ', 'i');
+        return java.text.Normalizer.normalize(lower, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
+    }
+
+    /**
+     * Fon unvanından ve yöneticisinden arama kartı eşleştirmesi için ayırt edici anahtar kelimeleri çıkarır.
+     * Genel stop-word'leri ve yönetici şirketin unvan parçalarını filtreleyerek sadece fona özgü kelimeleri döndürür.
+     */
+    List<String> extractDistinctKeywords(String title, String manager) {
+        if (title == null || title.trim().isEmpty()) {
+            return List.of();
+        }
+        String normalizedTitle = normalizeTurkish(title);
+        String[] words = normalizedTitle.replaceAll("[^a-z0-9]", " ").split("\\s+");
+        Set<String> stopWords = new HashSet<>(Set.of(
+                "fonu", "fon", "hisse", "senedi", "sened", "tl", "portfoy", "yonetimi", "yonetim",
+                "a", "s", "as", "ve", "ile", "icin", "veya", "yogun", "serbest", "degisken", "semsiye"
+        ));
+        if (manager != null && !manager.trim().isEmpty()) {
+            String normalizedMgr = normalizeTurkish(manager);
+            String[] mgrWords = normalizedMgr.replaceAll("[^a-z0-9]", " ").split("\\s+");
+            for (String mw : mgrWords) {
+                if (!mw.isEmpty()) {
+                    stopWords.add(mw);
+                }
+            }
+        }
+        List<String> keywords = new ArrayList<>();
+        for (String w : words) {
+            if (w.length() >= 2 && !stopWords.contains(w)) {
+                keywords.add(w);
+            }
+        }
+        return keywords;
+    }
+
+    /**
+     * Geriye dönük uyumluluk için arama rotası keşfi.
+     */
+    String discoverFromSearchRoute(String fundCode, String managerName) {
+        return discoverFromSearchRoute(fundCode, managerName, null);
+    }
+
+    /**
+     * KAP 2000'lik genel liste bildirim bombardımanından dolayı dolduğunda,
+     * doğrudan fon bazlı metin arama sayfalarını (/tr/search/{code}/1..5) tarayarak
+     * hedef fonun en son resmi "Portföy Dağılım Raporu" bildirim ID'sini yakalar.
+     *
+     * 3 KATMANLI ÇAPRAZ DOĞRULAMA (CROSS-CHECK):
+     * 1. Katman (Konu): Kart başlığı mutlaka "Portföy Dağılım Raporu" olmalı, gider/duyurular elenmeli.
+     * 2. Katman (Yönetici): Kart içeriğinde portföy yönetim şirketi doğrulanmalı.
+     * 3. Katman (Fon Doğrulaması): Kart içeriğinde ya doğrudan fon kodu (BDY) geçmeli,
+     *    ya da fonun resmi unvanındaki ayırt edici anahtar kelimeler (örn: BIST 100 Dışı Şirketler)
+     *    kart başlığıyla eşleşmelidir. Böylece yanlış fonların indirilmesi kesin olarak engellenir.
+     */
+    String discoverFromSearchRoute(String fundCode, String managerName, String fundTitle) {
+        String code = fundCode.trim().toUpperCase(Locale.ROOT);
+        String mgr = managerName != null ? managerName.trim() : "";
+        List<String> keywords = extractDistinctKeywords(fundTitle, managerName);
+
+        for (int page = 1; page <= 5; page++) {
+            try {
+                String searchPageUrl = "https://www.kap.org.tr/tr/search/" + code + "/" + page;
+                String html = webClient.get()
+                        .uri(searchPageUrl)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                        .header("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7")
+                        .retrieve()
+                        .bodyToMono(String.class)
+                        .block(Duration.ofSeconds(10));
+
+                if (html == null || html.isEmpty()) {
+                    continue;
+                }
+
+                // Bildirim bağlantılarını ve çevresindeki metni regex ile analiz et
+                java.util.regex.Pattern re = java.util.regex.Pattern.compile("/tr/Bildirim/(\\d+)");
+                java.util.regex.Matcher m = re.matcher(html);
+                while (m.find()) {
+                    String id = m.group(1);
+                    int start = Math.max(0, m.start() - 50);
+                    int end = Math.min(html.length(), m.start() + 400);
+                    String snippet = normalizeTurkish(html.substring(start, end));
+
+                    // 1. KATMAN: Mutlaka Portföy Dağılım Raporu olmalı
+                    if (!snippet.contains("portfoy dagilim")) {
+                        continue;
+                    }
+
+                    // Gider, duyuru, bilgilendirme veya alım satım bildirimlerini kesinlikle ele
+                    if (snippet.contains("toplam gider") || snippet.contains("gider bilgileri")
+                            || snippet.contains("bilgilendirme formu") || snippet.contains("genel aciklama")
+                            || snippet.contains("izahname") || snippet.contains("pay alim satim")
+                            || snippet.contains("komisyon")) {
+                        continue;
+                    }
+
+                    // 2. KATMAN: Yönetici Şirket Doğrulaması
+                    boolean mgrMatch = true;
+                    if (!mgr.isEmpty()) {
+                        String cleanMgr = normalizeTurkish(mgr.replaceAll("(?i)(yönetimi|yonetimi|a\\.ş\\.|a\\.s\\.|as|aş|şirketi|sirketi)", "").trim());
+                        mgrMatch = cleanMgr.isEmpty() || snippet.contains(cleanMgr);
+                    }
+                    if (!mgrMatch) {
+                        continue;
+                    }
+
+                    // 3. KATMAN: Fon Doğrulaması (Çapraz Doğrulama)
+                    boolean fundMatch = false;
+
+                    // A) Fon kodu doğrudan bildirim kartında veya ilgili fonlar listesinde geçiyorsa
+                    if (snippet.contains(code.toLowerCase(Locale.ROOT))) {
+                        fundMatch = true;
+                    }
+
+                    // B) Fon unvanından türetilen ayırt edici anahtar kelimeler kart başlığı ile örtüşüyorsa
+                    if (!fundMatch && !keywords.isEmpty()) {
+                        long matchedCount = keywords.stream().filter(snippet::contains).count();
+                        if (keywords.size() <= 2 && matchedCount >= 1) {
+                            fundMatch = true;
+                        } else if (keywords.size() > 2 && (matchedCount >= 2 || matchedCount * 2 >= keywords.size())) {
+                            fundMatch = true;
+                        }
+                    }
+
+                    // C) Eğer unvan bilinmiyorsa (fundTitle == null veya boş), arama rotası (/tr/search/{code}/1)
+                    // zaten spesifik olarak hedef fon koduyla açıldığı için; kart konusu Portföy Dağılım Raporu
+                    // olup yönetici uyuşmazlığı da yoksa, 1. sayfadaki ilk sonuç kabul edilir.
+                    if (!fundMatch && (fundTitle == null || fundTitle.trim().isEmpty()) && page == 1) {
+                        fundMatch = true;
+                    }
+
+                    if (fundMatch) {
+                        log.info("[KapClient] 🎯 KAP metin aramasından (/tr/search/{}/{}) en güncel bildirim ID bulundu: {}", code, page, id);
+                        return id;
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("[KapClient] Metin arama sayfası ({}) taranırken hata: {}", page, e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Geriye dönük uyumluluk için varsayılan bildirim ID ayıklayıcı.
      */
     String extractLatestDisclosureId(String html) {
+        return extractLatestDisclosureId(html, null, null);
+    }
+
+    /**
+     * KAP bildirim sorgu tablosundan hedef fon ve yönetici şirket ile tam eşleşen
+     * "Portföy Dağılım Raporu" bildirim ID'sini ayıklar.
+     *
+     * Güvenlik ve Doğruluk Kriterleri:
+     * 1. Bildirim konusu mutlaka "Portföy Dağılım Raporu" olmalıdır (Gider veya duyurular elenir).
+     * 2. Başka portföy yönetim şirketlerinin (Örn: İş Portföy yerine Yapı Kredi) raporları KESİNLİKLE kabul edilmez.
+     * 3. Hedef fon ile tam uyumlu olmayan yan fonlar (Örn: TTE hisse senedi fonu yerine karma veya yapay zeka fonları) elenir.
+     */
+    String extractLatestDisclosureId(String html, String fundCode, String managerName) {
+        return extractLatestDisclosureId(html, fundCode, managerName, null);
+    }
+
+    String extractLatestDisclosureId(String html, String fundCode, String managerName, String fundTitle) {
         if (html == null) return null;
+
+        String code = fundCode != null ? fundCode.trim().toUpperCase(java.util.Locale.ROOT) : "";
+        String mgr = managerName != null ? managerName.trim().toUpperCase(java.util.Locale.ROOT) : "";
 
         // KAP HTML tablosunda her bildirim <tr id="notification..." satırındadır
         java.util.regex.Pattern trPattern = java.util.regex.Pattern.compile(
@@ -238,20 +555,77 @@ public class KapClient {
 
         while (trMatcher.find()) {
             String rowHtml = trMatcher.group(1);
-            // Satırda "Portföy Dağılım Raporu" veya "portf" geçiyor mu?
-            if (rowHtml.toLowerCase().contains("portf")) {
-                // <input id="1664251" ... name="notification-checkbox"
-                java.util.regex.Pattern idPattern = java.util.regex.Pattern.compile("id=\"(\\d+)\"[^>]*name=\"notification-checkbox\"");
-                java.util.regex.Matcher idMatcher = idPattern.matcher(rowHtml);
-                if (idMatcher.find()) {
-                    return idMatcher.group(1);
-                }
+            String rowLower = rowHtml.toLowerCase(java.util.Locale.ROOT);
 
-                java.util.regex.Pattern idPattern2 = java.util.regex.Pattern.compile("name=\"notification-checkbox\"[^>]*id=\"(\\d+)\"");
-                java.util.regex.Matcher idMatcher2 = idPattern2.matcher(rowHtml);
-                if (idMatcher2.find()) {
-                    return idMatcher2.group(1);
+            // 1. Mutlaka "Portföy Dağılım Raporu" olmalı
+            boolean isPdr = rowLower.contains("portföy dağılım") || rowLower.contains("portfoy dagilim");
+            if (!isPdr) {
+                continue;
+            }
+
+            // Gider, izahname, duyuru veya genel açıklamaları kesinlikle ele
+            if (rowLower.contains("toplam gider") || rowLower.contains("gider bilgileri")
+                    || rowLower.contains("bilgilendirme formu") || rowLower.contains("genel açıklama")
+                    || rowLower.contains("izahname")) {
+                continue;
+            }
+
+            String rowUpper = rowHtml.toUpperCase(java.util.Locale.ROOT);
+
+            // 2. Portföy Yönetim Şirketi (Manager) Doğrulaması (Generic - Sıfır Hardcode)
+            boolean matchesManager = true;
+            if (!mgr.isEmpty()) {
+                String cleanMgr = normalizeTurkish(mgr.replaceAll("(?i)(yönetimi|yonetimi|a\\.ş\\.|a\\.s\\.|as|aş|şirketi|sirketi|portföy|portfoy)", "").trim());
+                String normRow = normalizeTurkish(rowHtml);
+                matchesManager = cleanMgr.isEmpty() || normRow.contains(cleanMgr);
+            }
+
+            // Fon kodu doğrudan bildirim satırında geçiyorsa, fon kodunun SPK nezdindeki tekilliğine güvenilir
+            if (!matchesManager && !code.isEmpty() && (rowUpper.contains(code + " ") || rowUpper.contains(code + "-") || rowUpper.contains("(" + code + ")") || rowUpper.contains(code))) {
+                matchesManager = true;
+            }
+
+            if (!matchesManager) {
+                continue;
+            }
+
+            // 3. Fon Doğrulaması (Generic Çapraz Doğrulama - Sıfır Hardcode)
+            boolean matchesFund = false;
+
+            // A) Fon kodu doğrudan bildirim satırında veya link metninde geçiyorsa
+            if (!code.isEmpty() && (rowUpper.contains(code + " ") || rowUpper.contains(code + "-") || rowUpper.contains("(" + code + ")") || rowUpper.contains(code))) {
+                matchesFund = true;
+            }
+
+            // B) Fon unvanından türetilen ayırt edici anahtar kelimeler ile dinamik eşleşme
+            if (!matchesFund && fundTitle != null && !fundTitle.trim().isEmpty()) {
+                List<String> keywords = extractDistinctKeywords(fundTitle, managerName);
+                String normalizedRow = normalizeTurkish(rowHtml);
+                long matched = keywords.stream().filter(normalizedRow::contains).count();
+                if (keywords.size() <= 2 && matched >= 1) {
+                    matchesFund = true;
+                } else if (keywords.size() > 2 && (matched >= 2 || matched * 2 >= keywords.size())) {
+                    matchesFund = true;
                 }
+            } else if (!matchesFund && (fundTitle == null || fundTitle.trim().isEmpty())) {
+                matchesFund = code.isEmpty();
+            }
+
+            if (!matchesFund) {
+                continue;
+            }
+
+            // 4. Eşleşen bildirim satırından ID'yi ayıkla
+            java.util.regex.Pattern idPattern = java.util.regex.Pattern.compile("id=\"(\\d+)\"[^>]*name=\"notification-checkbox\"");
+            java.util.regex.Matcher idMatcher = idPattern.matcher(rowHtml);
+            if (idMatcher.find()) {
+                return idMatcher.group(1);
+            }
+
+            java.util.regex.Pattern idPattern2 = java.util.regex.Pattern.compile("name=\"notification-checkbox\"[^>]*id=\"(\\d+)\"");
+            java.util.regex.Matcher idMatcher2 = idPattern2.matcher(rowHtml);
+            if (idMatcher2.find()) {
+                return idMatcher2.group(1);
             }
         }
         return null;
@@ -292,11 +666,7 @@ public class KapClient {
      */
     public KapPdfDto downloadFromUrl(String fundCode, String pdfUrl) {
         try {
-            byte[] bytes = webClient.get()
-                    .uri(pdfUrl)
-                    .retrieve()
-                    .bodyToMono(byte[].class)
-                    .block(Duration.ofSeconds(20));
+            byte[] bytes = downloadPdfBytes(pdfUrl);
 
             if (bytes == null || bytes.length == 0) {
                 throw new IllegalStateException("KAP sunucusundan boş PDF yanıtı döndü: " + pdfUrl);
@@ -321,6 +691,54 @@ public class KapClient {
             log.error("[KapClient] PDF indirme hatası: URL='{}' -> {}", pdfUrl, e.getMessage());
             throw new RuntimeException("KAP PDF indirilemedi: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * KAP sunucularından büyük boyutlu ve chunked PDF dosyalarını
+     * bağlantı kopması (PrematureCloseException) yaşamadan dayanıklı şekilde indirir.
+     * Birincil olarak Java 11+ yerel HttpClient'ı kullanır; hata durumunda WebClient'a döner.
+     */
+    private byte[] downloadPdfBytes(String pdfDownloadUrl) {
+        log.info("[KapClient] 📥 Ek PDF indirme linki yakalandı: {}", pdfDownloadUrl);
+        // 1. Birincil Yöntem: Java Yerel HttpClient (Citrix NetScaler ve chunked stream bağlantı kopmalarına karşı en dayanıklı yöntem)
+        try {
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .followRedirects(java.net.http.HttpClient.Redirect.ALWAYS)
+                    .connectTimeout(Duration.ofSeconds(20))
+                    .build();
+
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(URI.create(pdfDownloadUrl))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "application/pdf,application/octet-stream,*/*")
+                    .header("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7")
+                    .timeout(Duration.ofSeconds(60))
+                    .GET()
+                    .build();
+
+            java.net.http.HttpResponse<byte[]> response = client.send(
+                    request, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                byte[] body = response.body();
+                if (body != null && body.length > 0) {
+                    log.info("[KapClient] PDF yerel java.net.http ile başarıyla indirildi. Boyut={} KB", String.format("%.2f", body.length / 1024.0));
+                    return body;
+                }
+            }
+            log.warn("[KapClient] java.net.http ile indirme durumu {}. WebClient deneniyor...", response.statusCode());
+        } catch (Exception e) {
+            log.warn("[KapClient] java.net.http ile indirme başarısız ({}), WebClient ile devam ediliyor...", e.getMessage());
+        }
+
+        // 2. Yedek Yöntem: Spring WebClient
+        return webClient.get()
+                .uri(pdfDownloadUrl)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Accept", "application/pdf,application/octet-stream,*/*")
+                .retrieve()
+                .bodyToMono(byte[].class)
+                .block(Duration.ofSeconds(45));
     }
 
     /**
@@ -418,11 +836,26 @@ public class KapClient {
     }
 
     /**
+     * Belirtilen fona ait 'samples/' klasöründe geçerli bir örnek PDF bulunup bulunmadığını kontrol eder.
+     * Sadece genel klasör varlığını değil, ilgili fon için ({FON_KODU}_*.pdf) dosyasının
+     * gerçekten mevcut olup olmadığını doğrular.
+     *
+     * @param fundCode Fon kodu (örn: "BDY", "TTE", "THF")
+     * @return İlgili fona ait örnek dosya varsa true, yoksa false
+     */
+    public boolean hasSamplePdfForFund(String fundCode) {
+        if (fundCode == null || fundCode.trim().isEmpty()) {
+            return false;
+        }
+        return !findAllSamplePdfFiles(fundCode.trim()).isEmpty();
+    }
+
+    /**
      * Akıllı 'samples' dizini bulucu.
      * Mevcut çalışma dizinini (CWD) ve üst dizinlerini kontrol ederek
      * projedeki 'samples' klasörünün mutlak yolunu bulur.
      */
-    private Path findSamplesDirectory() throws FileNotFoundException {
+    public Path findSamplesDirectory() throws FileNotFoundException {
         List<Path> candidatePaths = new ArrayList<>();
         candidatePaths.add(Paths.get("samples"));
         candidatePaths.add(Paths.get("../samples"));
@@ -445,24 +878,93 @@ public class KapClient {
     }
 
     /**
-     * 'samples/' klasörü içinde adı '{FON_KODU}_*.pdf' kuralına uyan ilk dosyayı bulur.
-     * Örnek: "THF" -> "THF_2026_08.pdf"
+     * 'samples/' klasörü içinde belirli bir fona ait tüm PDF dosyalarını listeler.
+     * En güncelden eskiye doğru sıralanır (Örn: 2026_09 > 2026.09 > 2026_08).
+     */
+    public List<Path> findAllSamplePdfFiles(String fundCode) {
+        try {
+            Path samplesDir = findSamplesDirectory();
+            String code = fundCode.toUpperCase(Locale.ROOT);
+            String prefixUnder = code + "_";
+            String prefixDot = code + ".";
+            String prefixDash = code + "-";
+
+            List<Path> matchingFiles = new ArrayList<>();
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(samplesDir, "*.pdf")) {
+                for (Path entry : stream) {
+                    String fileName = entry.getFileName().toString().toUpperCase(Locale.ROOT);
+                    if (fileName.startsWith(prefixUnder) || fileName.startsWith(prefixDot) || fileName.startsWith(prefixDash)) {
+                        matchingFiles.add(entry);
+                    }
+                }
+            }
+            matchingFiles.sort((a, b) -> b.getFileName().toString().compareToIgnoreCase(a.getFileName().toString()));
+            return matchingFiles;
+        } catch (Exception e) {
+            log.warn("[KapClient] Örnek PDF dosyaları listelenemedi: Fon='{}', Hata={}", fundCode, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 'samples/' klasörü içinden ismi verilen spesifik bir PDF dosyasını okur ve yükler.
+     */
+    public KapPdfDto loadSpecificSampleFile(String fundCode, String fileName) {
+        try {
+            Path samplesDir = findSamplesDirectory();
+            Path targetFile = samplesDir.resolve(fileName).normalize();
+            if (!targetFile.startsWith(samplesDir)) {
+                throw new SecurityException("Yetkisiz dosya erişimi veya geçersiz dosya yolu: " + fileName);
+            }
+            if (!Files.exists(targetFile) || !Files.isRegularFile(targetFile)) {
+                throw new FileNotFoundException("Belirtilen dosya bulunamadı: " + fileName);
+            }
+
+            byte[] bytes = Files.readAllBytes(targetFile);
+            String sha256 = calculateSha256(bytes);
+            return KapPdfDto.builder()
+                    .fundCode(fundCode.toUpperCase())
+                    .fileName(targetFile.getFileName().toString())
+                    .content(bytes)
+                    .sha256Hash(sha256)
+                    .source(targetFile.getFileName().toString())
+                    .downloadedAt(LocalDateTime.now())
+                    .build();
+        } catch (Exception e) {
+            log.error("[KapClient] Spesifik örnek dosya okunamadı: Dosya='{}' -> {}", fileName, e.getMessage());
+            throw new RuntimeException("Dosya okuma hatası: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 'samples/' klasörü içinde adı '{FON_KODU}_*.pdf' veya '{FON_KODU}.*.pdf' kuralına uyan en güncel dosyayı bulur.
+     * Örnek: "TI2" -> "TI2_2026.09.pdf" veya "TI2_2026_09.pdf"
      */
     private Path findSamplePdfFile(Path samplesDir, String fundCode) throws FileNotFoundException {
-        String prefix = fundCode.toUpperCase() + "_";
+        String code = fundCode.toUpperCase(Locale.ROOT);
+        String prefixUnder = code + "_";
+        String prefixDot = code + ".";
+        String prefixDash = code + "-";
 
+        List<Path> matchingFiles = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(samplesDir, "*.pdf")) {
             for (Path entry : stream) {
-                String fileName = entry.getFileName().toString().toUpperCase();
-                if (fileName.startsWith(prefix)) {
-                    return entry;
+                String fileName = entry.getFileName().toString().toUpperCase(Locale.ROOT);
+                if (fileName.startsWith(prefixUnder) || fileName.startsWith(prefixDot) || fileName.startsWith(prefixDash)) {
+                    matchingFiles.add(entry);
                 }
             }
         } catch (IOException e) {
             throw new RuntimeException("'samples' dizini taranamadı: " + e.getMessage(), e);
         }
 
-        throw new FileNotFoundException("'samples/' klasöründe '" + prefix + "*.pdf' formatında dosya bulunamadı!");
+        if (!matchingFiles.isEmpty()) {
+            // Dosya adına göre ters sırala: TI2_2026.09.pdf veya TTE_2026_08.pdf en güncelden eskiye
+            matchingFiles.sort((a, b) -> b.getFileName().toString().compareToIgnoreCase(a.getFileName().toString()));
+            return matchingFiles.get(0);
+        }
+
+        throw new FileNotFoundException("'samples/' klasöründe '" + code + "_*.pdf' formatında dosya bulunamadı!");
     }
 
     /**

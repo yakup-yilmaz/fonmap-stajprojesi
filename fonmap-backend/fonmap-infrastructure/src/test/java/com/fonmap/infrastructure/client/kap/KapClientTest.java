@@ -155,20 +155,16 @@ class KapClientTest {
     }
 
     @Test
-    @DisplayName("Akıllı Fallback Testi: Canlı URL Ulaşılamazsa Sistemin Çökmeyip Yerel Örneğe Geçmesi")
-    void testFetchPdfFallback_WhenUrlFails_UsesLocalSample() {
+    @DisplayName("Yerel Örnek PDF Yükleme Testi (samples/ klasörü varsa)")
+    void testLoadFromLocalSample() {
         Assumptions.assumeTrue(kapClient.hasLocalSamples(),
                 "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
 
-        // Geçersiz bir URL veriyoruz. Sistem hata verip patlamamalı,
-        // loga uyarı basıp yerel 'samples/THF_*.pdf' dosyasına fallback yapmalıdır.
-        String invalidUrl = "http://localhost:59999/gecersiz_link.pdf";
-
-        KapPdfDto dto = kapClient.fetchPdf("THF", invalidUrl);
+        KapPdfDto dto = kapClient.loadFromLocalSample("THF");
 
         assertNotNull(dto);
         assertEquals("THF", dto.getFundCode());
-        assertEquals("LOCAL_SAMPLE", dto.getSource(), "Canlı başarısız olduğunda LOCAL_SAMPLE kaynağına geçmelidir");
+        assertEquals("LOCAL_SAMPLE", dto.getSource());
         assertFalse(dto.isEmpty());
         assertNotNull(dto.getSha256Hash());
     }
@@ -190,5 +186,66 @@ class KapClientTest {
                     dto.getFundCode(), dto.getSource(), dto.getFileName(), dto.getSizeInKb(), dto.getSha256Hash().substring(0, 16) + "...");
         }
     }
+
+    @Test
+    @DisplayName("Güvenlik Testi: loadSpecificSampleFile ile Path Traversal Denemesi Engellenmeli")
+    void testLoadSpecificSampleFile_PathTraversalBlocked() {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(), "'samples/' klasörü bulunamadı.");
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () ->
+                kapClient.loadSpecificSampleFile("THF", "../../secret.txt"));
+        assertTrue(ex.getCause() instanceof SecurityException || ex.getMessage().contains("Yetkisiz") || ex.getMessage().contains("SecurityException"));
+    }
+
+    @Test
+    @DisplayName("HATA 2 Testi: hasSamplePdfForFund Fon Bazında Dosya Varlığını Doğru Tespit Etmeli")
+    void testHasSamplePdfForFund() {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(), "'samples/' klasörü bulunamadı.");
+
+        assertTrue(kapClient.hasSamplePdfForFund("THF"), "THF için samples klasöründe dosya olmalı");
+        assertFalse(kapClient.hasSamplePdfForFund("OLMAYAN_FON_99"), "Olmayan fon için false dönmeli");
+    }
+
+    @Test
+    @DisplayName("HATA 2 Testi: extractDistinctKeywords Stop-word ve Yönetici Şirketi Temizleyip Ayırt Edici Kelimeleri Çıkarmalı")
+    void testExtractDistinctKeywords() {
+        String title = "Ak Portföy BIST 100 Dışı Şirketler Hisse Senedi (TL) Fonu";
+        String manager = "Ak Portföy Yönetimi A.Ş.";
+
+        List<String> keywords = kapClient.extractDistinctKeywords(title, manager);
+
+        assertTrue(keywords.contains("bist"), "bist kelimesi bulunmalı");
+        assertTrue(keywords.contains("100"), "100 kelimesi bulunmalı");
+        assertTrue(keywords.contains("disi"), "disi kelimesi bulunmalı");
+        assertTrue(keywords.contains("sirketler"), "sirketler kelimesi bulunmalı");
+        assertFalse(keywords.contains("portfoy"), "portfoy stop-word olarak elenmeli");
+        assertFalse(keywords.contains("ak"), "ak yönetici parçası olarak elenmeli");
+        assertFalse(keywords.contains("hisse"), "hisse stop-word olarak elenmeli");
+    }
+
+    @Test
+    @DisplayName("HATA 2 Testi: Canlıda ve Diskte Olmayan Fon İçin Yanıltıcı Samples Hatası Yerine Açıklayıcı Hata Fırlatılmalı")
+    void testFetchPdf_ThrowsCleanInformativeException_WhenNoReportAndNoSample() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                kapClient.fetchPdf("OLMAYAN99", "Bilinmeyen Portföy", null, "Bilinmeyen Fon"));
+
+        assertTrue(ex.getMessage().contains("KAP'ta 'OLMAYAN99' fonu için yayınlanmış güncel bir portföy dağılım raporu bulunamadı"),
+                "Hata mesajı kullanıcıyı yanıltıcı samples/ hatası yerine yönlendirici olmalı: " + ex.getMessage());
+        assertFalse(ex.getMessage().contains("samples/ klasöründe"),
+                "Hata mesajı yerel samples klasörü bulunamadı dememeli!");
+    }
+
+    @Test
+    @DisplayName("HATA 4 Testi: Unvan (fundTitle) null Olduğunda Arama Rotası 1. Sayfa Fallback'i Çalışmalı")
+    void testDiscoverFromSearchRoute_WorksWhenFundTitleNull() {
+        String tteId = kapClient.discoverFromSearchRoute("TTE", null, null);
+        assertNotNull(tteId, "fundTitle null olduğunda arama rotası TTE bildirimini bulabilmeli");
+        assertTrue(tteId.matches("\\d+"), "Bildirim ID nümerik olmalı: " + tteId);
+
+        String bdyId = kapClient.discoverFromSearchRoute("BDY", null, null);
+        assertNotNull(bdyId, "fundTitle null olduğunda arama rotası BDY bildirimini bulabilmeli");
+        assertTrue(bdyId.matches("\\d+"), "Bildirim ID nümerik olmalı: " + bdyId);
+    }
 }
+
 

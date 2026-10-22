@@ -48,6 +48,19 @@ public interface PdfParserStrategy {
     ParsedPortfolioReportDto parse(byte[] pdfContent, String fundCode) throws Exception;
 
     /**
+     * PDF içeriğinin (metin veya sayfa düzeni) bu strateji tarafından
+     * ayrıştırılmaya uygunluk skorunu (0 - 100+) hesaplar (Content Sniffing).
+     *
+     * @param pdfContent  Ham PDF baytları
+     * @param textSample  PDF'in ilk 2 sayfasından çıkarılan büyük harfli örnek metin
+     * @param isLandscape PDF sayfalarının yatay (Landscape) olup olmadığı
+     * @return 0 veya üzeri uygunluk puanı
+     */
+    default int sniffScore(byte[] pdfContent, String textSample, boolean isLandscape) {
+        return 0;
+    }
+
+    /**
      * Bu stratejinin loglarda ve denetim kayıtlarında görünecek tanıtıcı adı.
      * Örnek: "TERA_LANDSCAPE_STRATEGY", "IS_PORTFOY_STRATEGY"
      */

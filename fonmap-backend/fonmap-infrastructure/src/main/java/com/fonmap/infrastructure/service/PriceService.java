@@ -141,8 +141,12 @@ public class PriceService {
                 .distinct()
                 .toList();
 
+        long uniqueCount = symbols.stream().filter(Objects::nonNull).map(priceCacheService::normalizeSymbol).distinct().count();
+        log.info("[PriceService] Çoklu fiyat sorgusu: Toplam {} sembol (Tekil: {}). {} sembol Redis önbelleğinden karşılandı (CACHE HIT). Dış sağlayıcıdan çekilecek eksik: {}",
+                symbols.size(), uniqueCount, resultMap.size(), missingSymbols.size());
+
         if (!missingSymbols.isEmpty()) {
-            log.debug("[PriceService] {} adet sembol önbellekte eksik, dış sağlayıcılardan temin edilecek: {}", 
+            log.info("[PriceService] {} adet eksik sembol dış sağlayıcılardan temin ediliyor: {}", 
                     missingSymbols.size(), missingSymbols);
 
             for (String missingSymbol : missingSymbols) {
@@ -210,14 +214,10 @@ public class PriceService {
                 }
             }
 
-            // Repo / Faiz için Fallback
+            // Repo / Faiz için Fallback: veri yoksa değer UYDURULMAZ; PriceProviderException yayılır
+            // ve çağıran taraf varlığı fiyatsız sayıp coverage'dan düşürür.
             if (isDeposit(symbol)) {
-                try {
-                    return fallbackToDatabase(symbol, tcmbEx);
-                } catch (Exception dbEx) {
-                    log.warn("[DB FALLBACK] Veritabanında repo kaydı yok, acil durum %37 repo faizi uygulanıyor: '{}'", symbol);
-                    return MarketPriceDto.ofRepo(symbol, BigDecimal.valueOf(0.370000), "EMERGENCY_REPO_FALLBACK");
-                }
+                return fallbackToDatabase(symbol, tcmbEx);
             }
 
             return fallbackToDatabase(symbol, tcmbEx);
@@ -277,6 +277,9 @@ public class PriceService {
      * Akşam TEFAS mutabakatı ve gün içi grafik çizimleri bu tablodan beslenir.
      */
     private void persistPriceQuote(MarketPriceDto dto) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+            return;
+        }
         try {
             String ticker = priceCacheService.normalizeSymbol(dto.getSymbol());
             Optional<Instrument> instrumentOpt = instrumentRepository.findByTicker(ticker);
@@ -374,7 +377,14 @@ public class PriceService {
     private boolean isDeposit(String symbol) {
         if (symbol == null) return false;
         String s = symbol.trim().toUpperCase(Locale.ROOT);
-        return s.equals("REPO") || s.equals("FAIZ") || s.equals("TRY_REPO") || s.contains("MEVDUAT");
+        return s.equals("REPO") || s.equals("FAIZ") || s.equals("TRY_REPO") || s.contains("MEVDUAT")
+                || s.equals("TMM") || s.equals("BPP") || s.equals("TPP") || s.contains("TAKASBANK") || s.equals("OVERNIGHT")
+                || s.contains("TEMINAT") || s.contains("TEMİNAT") || s.equals("VIOP")
+                || isBondOrBillIsin(s);
+    }
+
+    private static boolean isBondOrBillIsin(String s) {
+        return s.matches("^TR[FTPSKB][A-Z0-9_]+$");
     }
 
     private boolean isFxOrRepo(String symbol) {

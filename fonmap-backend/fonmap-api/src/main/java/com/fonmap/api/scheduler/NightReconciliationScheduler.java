@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,30 +29,42 @@ import java.util.Optional;
  *
  * 🕒 BORSA & TEFAS ZAMANLAMA ÇELİŞKİSİ:
  * - BIST saat 18:10'da kapanır ve son seans tahmini mühürlenir.
- * - Portföy yönetim şirketleri o günün kesinleşmiş değerini (NAV) TEFAS'a bildirir.
+ * - Portföy yönetim şirketleri o günün kesinleşmiş değerini (NAV) TEFAS'a
+ * bildirir.
  * - TEFAS resmi fiyatları genellikle 23:00 civarında açıklamaya başlar.
  *
  * ⚠️ KRİTİK PROBLEM (TEFAS GECİKMELERİ VE GECE YARISI GEÇİŞİ):
- * 1. TEFAS'ta tüm fonlar saat 23:00:00'da aynı anda AÇIKLANMAZ! Kimi fon 23:10'da,
- *    kimi 23:45'te, kimi ise gece 00:30 veya 01:15'te açıklar.
- * 2. Saat 23:59'dan 00:00'a geçildiğinde takvim günü değişir (Salı -> Çarşamba).
- *    Eğer kod safça `LocalDate.now()` derse, yeni günün seansını aramaya kalkar ve çöker!
- *    Oysa gece 01:00'de mutabakatı yapılan seans, DÜN saat 18:10'da kapanan seanstr!
+ * 1. TEFAS'ta tüm fonlar saat 23:00:00'da aynı anda AÇIKLANMAZ! Kimi fon
+ * 23:10'da,
+ * kimi 23:45'te, kimi ise gece 00:30 veya 01:15'te açıklar.
+ * 2. Saat 23:59'dan 00:00'a geçildiğinde takvim günü değişir (Salı ->
+ * Çarşamba).
+ * Eğer kod safça `LocalDate.now()` derse, yeni günün seansını aramaya kalkar ve
+ * çöker!
+ * Oysa gece 01:00'de mutabakatı yapılan seans, DÜN saat 18:10'da kapanan
+ * seanstr!
  *
  * 🛡️ ÇÖZÜM MİMARİSİ (AKILLI DELTA RETRY POLLING):
  * 1. Akıllı Seans Tarihi Tespiti: Saat 20:00 - 23:59 arasındaysak bugünü,
- *    gece yarısından sonra (00:00 - 09:59) isek bir önceki borsa işlem gününü hedefler.
- * 2. 15 Dakikalık Periyodik Yoklama: 23:00'ten gece 03:00'e kadar her 15 dakikada bir çalışır.
- * 3. Idempotent (Tekrarlanabilir) Delta Filtreleme: Zaten açıklanmış (isVerified = true) fonları
- *    atlayarak TEFAS'a boşuna istek atmaz. Sadece henüz açıklanmamış fonları sorgular.
- * 4. Açıklandığı Anda Mühürleme: TEFAS fiyatı yayımladığı anda getiri farkı hesaplanır ve
- *    veritabanına onaylı olarak kaydedilir.
- * 5. Sabah 08:30 Emniyet Ağı: Gece TEFAS sunucu bakımı vb. nedenlerle geciken son fonlar varsa,
- *    sabah BIST 10:00'da açılmadan önce son bir kez kontrol edilip mutabakat tamamlanır.
+ * gece yarısından sonra (00:00 - 09:59) isek bir önceki borsa işlem gününü
+ * hedefler.
+ * 2. 15 Dakikalık Periyodik Yoklama: 23:00'ten gece 03:00'e kadar her 15
+ * dakikada bir çalışır.
+ * 3. Idempotent (Tekrarlanabilir) Delta Filtreleme: Zaten açıklanmış
+ * (isVerified = true) fonları
+ * atlayarak TEFAS'a boşuna istek atmaz. Sadece henüz açıklanmamış fonları
+ * sorgular.
+ * 4. Açıklandığı Anda Mühürleme: TEFAS fiyatı yayımladığı anda getiri farkı
+ * hesaplanır ve
+ * veritabanına onaylı olarak kaydedilir.
+ * 5. Sabah 08:30 Emniyet Ağı: Gece TEFAS sunucu bakımı vb. nedenlerle geciken
+ * son fonlar varsa,
+ * sabah BIST 10:00'da açılmadan önce son bir kez kontrol edilip mutabakat
+ * tamamlanır.
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
+@RequiredArgsConstructor
 public class NightReconciliationScheduler {
 
     private final FundRepository fundRepository;
@@ -59,16 +72,20 @@ public class NightReconciliationScheduler {
     private final ReconciliationResultRepository reconciliationResultRepository;
     private final MarketHolidayRepository marketHolidayRepository;
 
+    private static final ZoneId ZONE_ISTANBUL = ZoneId.of("Europe/Istanbul");
+
     /**
-     * 1. ANA DÖNGÜ: Gece 23:00 ile 02:45 Arası Her 15 Dakikada Bir Tekrar Deneme
+     * 1. ANA DÖNGÜ: Gece 23:00 ile 02:45 Arası
+     * Her 15 Dakikada Bir Tekrar Deneme
      * -------------------------------------------------------------------------------------
      * Cron İfadesi: "0 0/15 23,0,1,2 * * *"
-     * Çalışma Saatleri: 23:00, 23:15, 23:30, 23:45, 00:00, 00:15... 02:45 (Toplam 16 deneme)
+     * Çalışma Saatleri: 23:00, 23:15, 23:30, 23:45, 00:00, 00:15... 02:45 (Toplam
+     * 16 deneme)
      * Saat Dilimi: Europe/Istanbul
      */
     @Scheduled(cron = "0 0/15 23,0,1,2 * * *", zone = "Europe/Istanbul")
     public void runNightReconciliationLoop() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(ZONE_ISTANBUL);
         LocalDate targetTradingDate = determineTargetTradingDate(now);
 
         // Hedef tarih hafta sonuna denk geliyorsa veya resmi tatilse mutabakat yapılmaz
@@ -84,29 +101,32 @@ public class NightReconciliationScheduler {
     /**
      * 2. EMNİYET AĞI (SAFETY NET): Sabah Açılış Öncesi Son Kontrol (08:30)
      * -------------------------------------------------------------------------------------
-     * BIST saat 10:00'da yeni seansa başlamadan önce, dünün (veya Cuma'nın) henüz TEFAS'ta
+     * BIST saat 10:00'da yeni seansa başlamadan önce, dünün (veya Cuma'nın) henüz
+     * TEFAS'ta
      * eksik kalmış fonu var mı diye sabah 08:30'da son bir tarama yapar.
      * Cron İfadesi: "0 30 8 * * MON-FRI"
      */
     @Scheduled(cron = "0 30 8 * * MON-FRI", zone = "Europe/Istanbul")
     public void runMorningFinalCheck() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(ZONE_ISTANBUL);
         LocalDate targetTradingDate = determineTargetTradingDate(now);
 
         if (isNonTradingDay(targetTradingDate)) {
             return;
         }
 
-        log.info("[NightReconciliationScheduler] 🌅 Sabah seans öncesi son mutabakat denetimi başlatılıyor (Hedef Seans: {})...",
+        log.info(
+                "[NightReconciliationScheduler] 🌅 Sabah seans öncesi son mutabakat denetimi başlatılıyor (Hedef Seans: {})...",
                 targetTradingDate);
         executeReconciliationForDate(targetTradingDate, "SABAH SEANS ÖNCESİ KONTROL");
     }
 
     /**
-     * Belirli bir seans tarihi için TEFAS mutabakatını delta usulüyle (eksikleri tamamlayarak) yürütür.
+     * Belirli bir seans tarihi için TEFAS mutabakatını delta usulüyle (eksikleri
+     * tamamlayarak) yürütür.
      *
      * @param targetTradingDate İncelenen borsa seans günü
-     * @param executionContext Loglama amaçlı tetikleyici adı
+     * @param executionContext  Loglama amaçlı tetikleyici adı
      */
     public void executeReconciliationForDate(LocalDate targetTradingDate, String executionContext) {
         log.info("[NightReconciliationScheduler] [{}] 🌙 TEFAS mutabakat kontrolü başladı (Hedef Seans: {})...",
@@ -133,14 +153,16 @@ public class NightReconciliationScheduler {
 
                 if (result.isVerified()) {
                     newlyVerifiedCount++;
-                    log.info("[NightReconciliationScheduler] ✅ TEFAS AÇIKLANDI: Fon='{}' | Tahmin=%{} | Gerçek=%{} | Hata Farkı=%{}",
+                    log.info(
+                            "[NightReconciliationScheduler] ✅ TEFAS AÇIKLANDI: Fon='{}' | Tahmin=%{} | Gerçek=%{} | Hata Farkı=%{}",
                             fund.getCode(),
                             result.getPredictedReturn(),
                             result.getActualReturn(),
                             result.getErrorDiff());
                 } else {
                     stillPendingCount++;
-                    log.info("[NightReconciliationScheduler] ⏳ TEFAS BEKLENİYOR: Fon='{}' henüz fiyat açıklamadı. Bir sonraki periyotta (15 dk sonra) tekrar denenecek.",
+                    log.info(
+                            "[NightReconciliationScheduler] ⏳ TEFAS BEKLENİYOR: Fon='{}' henüz fiyat açıklamadı. Bir sonraki periyotta (15 dk sonra) tekrar denenecek.",
                             fund.getCode());
                 }
 
@@ -153,22 +175,27 @@ public class NightReconciliationScheduler {
 
         // 3. ADIM: Sonuç Özeti
         if (stillPendingCount == 0) {
-            log.info("[NightReconciliationScheduler] 🎯 MÜKEMMEL! Hedef seans ({}) için tüm fonlar (Toplam: {}) TEFAS ile mutabakat edildi ve mühürlendi.",
+            log.info(
+                    "[NightReconciliationScheduler] 🎯 MÜKEMMEL! Hedef seans ({}) için tüm fonlar (Toplam: {}) TEFAS ile mutabakat edildi ve mühürlendi.",
                     targetTradingDate, alreadyVerifiedCount + newlyVerifiedCount);
         } else {
-            log.info("[NightReconciliationScheduler] 📊 Ara Durum ({}): Doğrulanmış={}, Yeni Açıklanan={}, Hâlâ TEFAS Bekleyen={}",
+            log.info(
+                    "[NightReconciliationScheduler] 📊 Ara Durum ({}): Doğrulanmış={}, Yeni Açıklanan={}, Hâlâ TEFAS Bekleyen={}",
                     targetTradingDate, alreadyVerifiedCount, newlyVerifiedCount, stillPendingCount);
         }
     }
 
     /**
-     * Borsa çalışma takvimine göre mutabakatı yapılacak hedef seans tarihini belirler.
+     * Borsa çalışma takvimine göre mutabakatı yapılacak hedef seans tarihini
+     * belirler.
      *
      * KURALLAR:
-     * - Saat 20:00 ile 23:59 arasındaysak: Hedef seans bugünün seansıdır (LocalDate.now()).
-     * - Gece yarısını geçtiysek (00:00 ile 09:59 arası): Hedef seans dünün seansıdır.
-     *   Eğer dün hafta sonu ise (örneğin Salı gecesi değil de Pazartesi sabahı ise),
-     *   takvimi geriye sararak son açık borsa gününe (Cuma'ya) gider.
+     * - Saat 20:00 ile 23:59 arasındaysak: Hedef seans bugünün seansıdır
+     * (LocalDate.now()).
+     * - Gece yarısını geçtiysek (00:00 ile 09:59 arası): Hedef seans dünün
+     * seansıdır.
+     * Eğer dün hafta sonu ise (örneğin Salı gecesi değil de Pazartesi sabahı ise),
+     * takvimi geriye sararak son açık borsa gününe (Cuma'ya) gider.
      */
     public LocalDate determineTargetTradingDate(LocalDateTime now) {
         if (now.getHour() >= 20) {

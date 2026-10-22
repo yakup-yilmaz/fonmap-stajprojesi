@@ -6,6 +6,7 @@ import com.fonmap.infrastructure.client.PriceProvider;
 import com.fonmap.infrastructure.client.dto.MarketPriceDto;
 import com.fonmap.infrastructure.client.exception.PriceProviderException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -30,9 +31,10 @@ public class YahooFinancePriceProvider implements PriceProvider {
     private static final String YAHOO_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
     private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-    private final RestClient restClient;
     private final ObjectMapper objectMapper;
+    private final RestClient restClient;
 
+    @Autowired
     public YahooFinancePriceProvider(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.restClient = RestClient.builder()
@@ -40,6 +42,11 @@ public class YahooFinancePriceProvider implements PriceProvider {
                 .defaultHeader(HttpHeaders.USER_AGENT, USER_AGENT)
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .build();
+    }
+
+    public YahooFinancePriceProvider(ObjectMapper objectMapper, RestClient restClient) {
+        this.objectMapper = objectMapper;
+        this.restClient = restClient;
     }
 
     @Override
@@ -80,16 +87,32 @@ public class YahooFinancePriceProvider implements PriceProvider {
                 previousCloseDouble = metaNode.path("chartPreviousClose").asDouble(0.0);
             }
 
+            // Hafta sonu, tatil veya seans dışı / sığ hisse dayanıklılığı (Off-market &
+            // Low-liquidity Resilience):
+            // Seans kapalıyken veya henüz işlem geçmemiş sığ hissede anlık fiyat sıfırsa,
+            // dünkü kapanış fiyatı baz alınır (%0 değişim).
+            if (currentPriceDouble <= 0.0 && previousCloseDouble > 0.0) {
+                log.info(
+                        "[{}] '{}' seans dışı veya ilk işlem gerçekleşmedi: regularMarketPrice sıfır, previousClose ({}) baz alınıyor.",
+                        PROVIDER_NAME, symbol, previousCloseDouble);
+                currentPriceDouble = previousCloseDouble;
+            } else if (previousCloseDouble <= 0.0 && currentPriceDouble > 0.0) {
+                log.info("[{}] '{}' önceki kapanış verisi yok, anlık fiyat ({}) baz alınıyor.",
+                        PROVIDER_NAME, symbol, currentPriceDouble);
+                previousCloseDouble = currentPriceDouble;
+            }
+
             if (currentPriceDouble <= 0.0 || previousCloseDouble <= 0.0) {
-                throw new PriceProviderException(PROVIDER_NAME, symbol, 
-                        String.format("Geçersiz fiyat değerleri: anlık=%.4f, dünkü=%.4f", currentPriceDouble, previousCloseDouble));
+                throw new PriceProviderException(PROVIDER_NAME, symbol,
+                        String.format("Geçersiz fiyat değerleri: anlık=%.4f, dünkü=%.4f", currentPriceDouble,
+                                previousCloseDouble));
             }
 
             BigDecimal currentPrice = BigDecimal.valueOf(currentPriceDouble);
             BigDecimal previousClose = BigDecimal.valueOf(previousCloseDouble);
 
             MarketPriceDto dto = MarketPriceDto.of(symbol.toUpperCase(), currentPrice, previousClose, PROVIDER_NAME);
-            log.debug("[{}] '{}' başarıyla çekildi: Anlık={}, Dünkü={}, Değişim={}", 
+            log.debug("[{}] '{}' başarıyla çekildi: Anlık={}, Dünkü={}, Değişim={}",
                     PROVIDER_NAME, symbol, currentPrice, previousClose, dto.getDailyChangeRatio());
 
             return dto;
@@ -114,7 +137,8 @@ public class YahooFinancePriceProvider implements PriceProvider {
                     try {
                         return getPrice(symbol);
                     } catch (Exception e) {
-                        log.warn("[{}] '{}' çekilemedi, diğerleri devam ediyor: {}", PROVIDER_NAME, symbol, e.getMessage());
+                        log.warn("[{}] '{}' çekilemedi, diğerleri devam ediyor: {}", PROVIDER_NAME, symbol,
+                                e.getMessage());
                         return null;
                     }
                 })
@@ -137,7 +161,8 @@ public class YahooFinancePriceProvider implements PriceProvider {
      * - "ALTIN" veya "GOLD" -> "GC=F"
      */
     private String formatYahooTicker(String symbol) {
-        if (symbol == null) return "";
+        if (symbol == null)
+            return "";
         String upper = symbol.trim().toUpperCase();
 
         if (upper.endsWith(".IS") || upper.endsWith("=X") || upper.endsWith("=F")) {
@@ -145,8 +170,8 @@ public class YahooFinancePriceProvider implements PriceProvider {
         }
 
         if (upper.equals("USD") || upper.equals("USDTRY") ||
-            upper.equals("EUR") || upper.equals("EURTRY") ||
-            upper.equals("GBP") || upper.equals("GBPTRY")) {
+                upper.equals("EUR") || upper.equals("EURTRY") ||
+                upper.equals("GBP") || upper.equals("GBPTRY")) {
             String base = upper.endsWith("TRY") ? upper : upper + "TRY";
             return base + "=X";
         }

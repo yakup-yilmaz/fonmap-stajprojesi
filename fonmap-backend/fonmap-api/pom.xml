@@ -53,6 +53,12 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Prometheus Metrik Dışa Aktarıcı (/actuator/prometheus) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- ShedLock (Zamanlanmış işlerin kilitlenmesi) -->
         <dependency>
             <groupId>net.javacrumbs.shedlock</groupId>
@@ -106,6 +112,8 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
+                    <mainClass>com.fonmap.api.FonmapApiApplication</mainClass>
+                    <fork>false</fork>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>

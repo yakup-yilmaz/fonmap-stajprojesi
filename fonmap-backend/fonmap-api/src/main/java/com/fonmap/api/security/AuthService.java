@@ -2,7 +2,6 @@ package com.fonmap.api.security;
 
 import com.fonmap.domain.entity.AdminUser;
 import com.fonmap.infrastructure.repository.AdminUserRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -35,13 +34,21 @@ import java.util.UUID;
  *    şifreler asla düz metin kıyaslanmaz.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class AuthService {
 
     private final AdminUserRepository adminUserRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+
+    public AuthService(
+            AdminUserRepository adminUserRepository,
+            PasswordEncoder passwordEncoder,
+            JwtService jwtService) {
+        this.adminUserRepository = adminUserRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.jwtService = jwtService;
+    }
 
     /**
      * 1. GÖREV: Kullanıcı Girişini Doğrular ve JWT Token Üretir.

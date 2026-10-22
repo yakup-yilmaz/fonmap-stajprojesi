@@ -7,13 +7,15 @@ import com.fonmap.domain.entity.MarketHoliday;
 import com.fonmap.infrastructure.repository.FundRepository;
 import com.fonmap.infrastructure.repository.MarketHolidayRepository;
 import com.fonmap.infrastructure.service.PriceService;
-import lombok.RequiredArgsConstructor;
+import com.fonmap.api.controller.EstimateController;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.List;
 
 /**
@@ -40,7 +42,6 @@ import java.util.List;
  *    Böylece API kotasını ve sunucuyu sıfır yorgunlukla korur.
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class LiveEstimateScheduler {
 
@@ -48,16 +49,25 @@ public class LiveEstimateScheduler {
     private final ReturnCalculationService returnCalculationService;
     private final MarketHolidayRepository marketHolidayRepository;
     private final PriceService priceService;
+    private final EstimateController estimateController;
+
+    public LiveEstimateScheduler(
+            FundRepository fundRepository,
+            ReturnCalculationService returnCalculationService,
+            MarketHolidayRepository marketHolidayRepository,
+            PriceService priceService,
+            @Lazy EstimateController estimateController) {
+        this.fundRepository = fundRepository;
+        this.returnCalculationService = returnCalculationService;
+        this.marketHolidayRepository = marketHolidayRepository;
+        this.priceService = priceService;
+        this.estimateController = estimateController;
+    }
 
     private static final LocalTime MARKET_OPEN = LocalTime.of(10, 0);
     private static final LocalTime MARKET_CLOSE = LocalTime.of(18, 10);
     private static final LocalTime CANARY_CHECK_TIME = LocalTime.of(10, 5);
-
-    /**
-     * O gün borsanın beklenmedik şekilde kapalı olduğu tespit edildiyse,
-     * günün geri kalanındaki 484 dakikada gereksiz sorgu atılmasını engelleyen hafıza kilidi.
-     */
-    private LocalDate dynamicClosedDate = null;
+    private static final ZoneId ZONE_ISTANBUL = ZoneId.of("Europe/Istanbul");
 
     /**
      * Seans İçi Dakikalık Çalışma Döngüsü:
@@ -68,8 +78,8 @@ public class LiveEstimateScheduler {
      */
     @Scheduled(cron = "0 * 10-18 * * MON-FRI", zone = "Europe/Istanbul")
     public void runLiveEstimates() {
-        LocalDate today = LocalDate.now();
-        LocalTime now = LocalTime.now();
+        LocalDate today = LocalDate.now(ZONE_ISTANBUL);
+        LocalTime now = LocalTime.now(ZONE_ISTANBUL);
 
         // 1. ADIM: Seans Saatleri Kontrolü (Borsa tam 18:10'da kesin olarak kapanır)
         if (now.isBefore(MARKET_OPEN) || now.isAfter(MARKET_CLOSE)) {
@@ -77,44 +87,26 @@ public class LiveEstimateScheduler {
             return;
         }
 
-        // 2. ADIM: Dinamik Devre Kesici Kontrolü (Bugün daha önce kapalı tespit edildiyse tüm gün sessiz kal)
-        if (today.equals(dynamicClosedDate)) {
-            log.debug("[LiveEstimateScheduler] Borsa İstanbul bugün kapalı olarak tespit edildiğinden pas geçiliyor.");
-            return;
-        }
-
-        // 3. ADIM: Veritabanı Resmi Tatil Takvimi Kontrolü
+        // 2. ADIM: Veritabanı Resmi Tatil Takvimi Kontrolü
         if (marketHolidayRepository.existsByHolidayDate(today)) {
             log.info("[LiveEstimateScheduler] Bugün ({}) resmi borsa tatilidir. Seans tahmini çalıştırılmıyor.", today);
             return;
         }
 
         // 4. ADIM: Dinamik Piyasa Canlılık Nabız Yoklaması (Canary Liveness Check)
-        // Saat 10:05 ve sonrasında, tatil tablosunda yazmasa bile Borsa'nın gerçekten açılıp açılmadığını test eder.
-        if (now.isAfter(CANARY_CHECK_TIME) && dynamicClosedDate == null) {
+        // Saat 10:05 ve sonrasında borsa seansının gerçekten açılıp açılmadığını kontrol eder.
+        // Seans henüz oturmamışsa veya geçici bir gecikme varsa tüm günü iptal etmek yerine
+        // sadece bu dakikayı pas geçer; sonraki dakikalarda seans başladığında döngü kendiliğinden devam eder.
+        if (now.isAfter(CANARY_CHECK_TIME)) {
             boolean isTrading = priceService.isMarketTradingToday();
             if (!isTrading) {
-                dynamicClosedDate = today;
-                log.warn("[LiveEstimateScheduler] 🛑 DİNAMİK DEVRE KESİCİ DEVREYE GİRDİ: Borsa İstanbul bugün seans açmadı (Uzatılmış / beklenmedik tatil tespit edildi)! Gün boyu (18:10'a kadar) kalan tüm dakikalık sorgular iptal edildi.");
-
-                // Diğer gece servislerinin de bilmesi için MarketHoliday tablosuna dinamik tatil kaydı aç
-                try {
-                    if (!marketHolidayRepository.existsByHolidayDate(today)) {
-                        marketHolidayRepository.save(MarketHoliday.builder()
-                                .holidayDate(today)
-                                .isHalfDay(false)
-                                .build());
-                        log.info("[LiveEstimateScheduler] 📝 Bugün ({}) veritabanına otomatik borsa tatili olarak kaydedildi.", today);
-                    }
-                } catch (Exception ignored) {
-                }
-
+                log.warn("[LiveEstimateScheduler] 🩺 Lokomotif hisselerde henüz fiyat hareketi tespit edilemedi. Bu dakikalık döngü pas geçiliyor, bir sonraki dakikada tekrar denenecek.");
                 return;
             }
         }
 
         long startTime = System.currentTimeMillis();
-        log.info("[LiveEstimateScheduler] 🔔 Dakikalık canlı tahmin döngüsü başlatıldı (Tarih: {})...", today);
+        log.info("[PRICE_POLL] [EVENT=MINUTE_CYCLE] [STATUS=STARTING] [TIME={}] 🔔 Dakikalık canlı fiyat & portföy getiri döngüsü başlatıldı...", now);
 
         // 5. ADIM: Sistemde aktif olan tüm fonları getir
         List<Fund> activeFunds = fundRepository.findAllActiveFundsOrdered();
@@ -127,22 +119,35 @@ public class LiveEstimateScheduler {
                 FundEstimateDto estimate = returnCalculationService.calculateAndSave(fund.getCode());
                 successCount++;
 
-                log.info("[LiveEstimateScheduler] 📈 Fon='{}' | Tahmin=%{} | Tahmini Fiyat={} TL | Kapsama=%{} | Güven={}",
+                log.info("[PRICE_POLL] [STATUS=SUCCESS] Fon='{}' | Tahmin=%{} | Fiyat={} TL | Kapsama=%{} | Güven={}",
                         fund.getCode(),
                         estimate.getEstimatedReturn(),
                         estimate.getEstimatedPrice(),
                         estimate.getCoverageRatio(),
                         estimate.getConfidenceLevel());
 
+            } catch (IllegalStateException ise) {
+                // Henüz snapshot yüklenmemiş fon (örn: yeni eklenmiş fon veya henüz raporu bulunmayan fon)
+                log.debug("[PRICE_POLL] [STATUS=SKIPPED] Fon='{}' henüz aktif bir portföy snapshot'ına sahip değil, döngü atlandı: {}",
+                        fund.getCode(), ise.getMessage());
             } catch (Exception e) {
                 errorCount++;
-                log.warn("[LiveEstimateScheduler] ⚠️ Fon '{}' için dakikalık tahmin üretilemedi: {}",
+                log.warn("[PRICE_POLL] [STATUS=FAILED] Fon='{}' için dakikalık tahmin üretilemedi: {}",
                         fund.getCode(), e.getMessage());
             }
         }
 
         long duration = System.currentTimeMillis() - startTime;
-        log.info("[LiveEstimateScheduler] 🏁 Döngü tamamlandı: Başarılı={}, Hatalı={}, Süre={} ms",
-                successCount, errorCount, duration);
+        log.info("[PRICE_POLL] [EVENT=MINUTE_CYCLE] [STATUS=COMPLETED] [TIME={}] 🏁 1 dakikalık seans turu tamamlandı: Başarılı={}/{}, Hatalı={}, Süre={} ms",
+                now, successCount, activeFunds.size(), errorCount, duration);
+
+        // API Controller'daki anasayfa önbelleğini anında tazele, kullanıcılar en güncel dakikayı anında görsün
+        try {
+            if (estimateController != null) {
+                estimateController.invalidateCache();
+            }
+        } catch (Exception e) {
+            log.warn("[LiveEstimateScheduler] Controller önbellek temizleme uyarısı: {}", e.getMessage());
+        }
     }
 }

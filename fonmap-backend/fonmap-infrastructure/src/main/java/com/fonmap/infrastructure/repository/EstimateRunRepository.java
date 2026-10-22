@@ -43,4 +43,12 @@ public interface EstimateRunRepository extends JpaRepository<EstimateRun, UUID> 
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime
     );
+
+    /**
+     * Snapshot silindiğinde ilişkili canlı tahmin kayıtlarını temizler.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("DELETE FROM EstimateRun er WHERE er.snapshot.id = :snapshotId")
+    void deleteBySnapshotId(@Param("snapshotId") UUID snapshotId);
 }

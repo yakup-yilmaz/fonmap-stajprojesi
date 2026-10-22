@@ -40,18 +40,40 @@ import java.util.Date;
 public class JwtService {
 
     /**
-     * JWT imzalamada kullanılan 256-bitlik (en az 32 karakter) süper gizli anahtar.
-     * application.properties'ten okunur; yoksa güvenli bir varsayılan kullanılır.
+     * JWT imzalama anahtarı (en az 32 karakter). FONMAP_JWT_SECRET ortam değişkeni / fonmap.jwt.secret ile verilir.
+     * Kaynak koda gömülü ortak bir varsayılan ARTIK YOK: prod profilinde anahtar yoksa uygulama başlamaz;
+     * geliştirmede her başlatışta rastgele üretilen geçici anahtar kullanılır (tokenlar yeniden başlatmada geçersiz olur).
      */
-    @Value("${fonmap.jwt.secret:FonmapSuperSecretKeyForJwtAuthenticationMustBeAtLeast256BitsLong2026!}")
+    @Value("${fonmap.jwt.secret:}")
     private String jwtSecret;
+
+    private final org.springframework.core.env.Environment environment;
+
+    public JwtService(org.springframework.core.env.Environment environment) {
+        this.environment = environment;
+    }
+
+    @jakarta.annotation.PostConstruct
+    void ensureSecret() {
+        if (jwtSecret != null && jwtSecret.length() >= 32) {
+            return;
+        }
+        if (java.util.Arrays.asList(environment.getActiveProfiles()).contains("prod")) {
+            throw new IllegalStateException(
+                    "fonmap.jwt.secret (FONMAP_JWT_SECRET) en az 32 karakter olarak tanımlanmalıdır (prod profili).");
+        }
+        byte[] random = new byte[48];
+        new java.security.SecureRandom().nextBytes(random);
+        jwtSecret = java.util.Base64.getEncoder().encodeToString(random);
+        log.warn("[JwtService] fonmap.jwt.secret tanımlı değil/kısa: bu çalışma için GEÇİCİ rastgele anahtar üretildi.");
+    }
 
     /**
      * Token geçerlilik süresi (Varsayılan: 24 Saat = 86.400.000 milisaniye).
      * Refresh token karmaşasına girmeden admin için konforlu bir çalışma süresi sağlar.
      */
     @Value("${fonmap.jwt.expiration-ms:86400000}")
-    private long jwtExpirationMs;
+    private long jwtExpirationMs = 86400000L;
 
     /**
      * 1. GÖREV: Başarılı Giriş Yapan Admin İçin Yeni JWT Token Üretir.

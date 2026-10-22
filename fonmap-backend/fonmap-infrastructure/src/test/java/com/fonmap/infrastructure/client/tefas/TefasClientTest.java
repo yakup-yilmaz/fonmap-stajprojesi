@@ -149,19 +149,66 @@ class TefasClientTest {
     }
 
     @Test
-    @DisplayName("Canlı TEFAS Bağlantı ve Hata Toleransı Testi (Canlı Ağ Yoksa Çökmez)")
-    void testLiveTefasConnection_Graceful() {
-        // Canlı TEFAS sorgusu atılır; ağ ulaşılamazsa veya TEFAS bakım modundaysa Optional.empty() döner
-        LocalDate testDate = LocalDate.now().minusDays(1);
+    @DisplayName("Canlı TEFAS Birim Pay Fiyatı Çekme Testi (TTE)")
+    void testLiveTefasConnection_TTE() {
         try {
-            Optional<TefasFundDto> result = tefasClient.fetchFundPrice("THF", testDate);
-            result.ifPresent(dto -> {
-                System.out.printf(">>> [CANLI TEFAS YANITI] Fon: %s | Tarih: %s | Fiyat: %s TL%n",
-                        dto.getFundCode(), dto.getPriceDate(), dto.getUnitPrice());
-            });
+            Optional<TefasFundDto> result = tefasClient.fetchLatestFundPrice("TTE");
+            if (result.isPresent()) {
+                TefasFundDto dto = result.get();
+                System.out.printf(">>> [CANLI TEFAS TTE BAŞARILI] Fon: %s | Birim Pay Fiyatı: %s TL | Tarih: %s | Portföy Büyüklüğü: %s TL | Pay Adedi: %s%n",
+                        dto.getFundCode(), dto.getUnitPrice(), dto.getPriceDate(), dto.getTotalPortfolioValue(), dto.getOutstandingShares());
+                assertNotNull(dto.getUnitPrice(), "TTE birim fiyatı boş olmamalı");
+                assertTrue(dto.getUnitPrice().compareTo(BigDecimal.ZERO) > 0, "TTE birim fiyatı 0'dan büyük olmalı");
+            } else {
+                System.out.println(">>> Canlı TEFAS TTE yanıtı dönmedi (Ağ / Güvenlik filtresi veya bakım modu).");
+            }
         } catch (Exception e) {
-            // Ağ hatası olsa bile test başarısız sayılmaz, log basılır
-            System.out.println(">>> Canlı TEFAS ağına erişilemedi (Normal / Çevrimdışı ortam): " + e.getMessage());
+            System.out.println(">>> Canlı TEFAS TTE bağlantı hatası: " + e.getMessage());
         }
+    }
+
+    @Test
+    @DisplayName("Canlı TEFAS Tarihsel Fiyat Çekme Testi (fetchHistoricalPrices - TTE)")
+    void testDiscoverHistoricalApi() {
+        LocalDate start = LocalDate.of(2026, 8, 1);
+        LocalDate end = LocalDate.of(2026, 8, 31);
+
+        List<TefasFundDto> results = tefasClient.fetchHistoricalPrices("TTE", start, end);
+
+        System.out.printf("🎉🎉🎉 [fetchHistoricalPrices TTE] Alınan Gün Sayısı: %d%n", results.size());
+        for (int i = 0; i < Math.min(5, results.size()); i++) {
+            TefasFundDto d = results.get(i);
+            System.out.printf("  -> Tarih: %s | Fiyat: %s TL | Günlük Getiri: %%%s%n",
+                    d.getPriceDate(), d.getUnitPrice(),
+                    d.getDailyReturn() != null ? d.getDailyReturn().multiply(BigDecimal.valueOf(100)) : "0");
+        }
+
+        assertFalse(results.isEmpty(), "TTE Ağustos ayı verisi boş olmamalı!");
+        assertTrue(results.size() >= 15, "İşlem günleri en az 15 gün olmalı (Ağustos)");
+        assertNotNull(results.get(0).getUnitPrice());
+    }
+
+    @Test
+    @DisplayName("Dinamik Kurucu Şirket Çıkarımı Testi (Sıfır Hardcode / SPK Şablonu)")
+    void testDeduceManagerFromTitle_Generic() {
+        // 1. Ak Portföy (BDY)
+        String ak = tefasClient.deduceManagerFromTitle("AK PORTFÖY BIST 100 DIŞI ŞİRKETLER HİSSE SENEDİ (TL) FONU (HİSSE SENEDİ YOĞUN FON)");
+        assertEquals("Ak Portföy Yönetimi A.Ş.", ak);
+
+        // 2. Garanti BBVA Portföy
+        String garanti = tefasClient.deduceManagerFromTitle("GARANTİ BBVA PORTFÖY HİSSE SENEDİ FONU");
+        assertEquals("Garanti BBVA Portföy Yönetimi A.Ş.", garanti);
+
+        // 3. İş Portföy
+        String is = tefasClient.deduceManagerFromTitle("İŞ PORTFÖY BIST TEKNOLOJİ ENDEKSİ FONU");
+        assertEquals("İş Portföy Yönetimi A.Ş.", is);
+
+        // 4. Kuveyt Türk Portföy
+        String kuveyt = tefasClient.deduceManagerFromTitle("KUVEYT TÜRK PORTFÖY KATILIM FONU");
+        assertEquals("Kuveyt Türk Portföy Yönetimi A.Ş.", kuveyt);
+
+        // 5. Bilinmeyen / Piyasaya Yeni Giren Şirket (XYZ Portföy)
+        String yeni = tefasClient.deduceManagerFromTitle("XYZ PORTFÖY YENİ NESİL TEKNOLOJİ FONU");
+        assertEquals("Xyz Portföy Yönetimi A.Ş.", yeni);
     }
 }

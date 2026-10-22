@@ -45,7 +45,83 @@ public class BacktestReportDto {
     private LocalDate endDate;
 
     /**
-     * Toplam Test Edilen İş Günü Sayısı (Örn: 60)
+     * Rapor Durumu: "SUCCESS", "INSUFFICIENT_HISTORY", "NO_DATA"
+     */
+    @Builder.Default
+    private String status = "SUCCESS";
+
+    /**
+     * Durum Açıklama Mesajı
+     */
+    private String message;
+
+    /**
+     * Güvenilir ekonometrik analiz için gerekli minimum gün sayısı (Varsayılan: 30)
+     */
+    @Builder.Default
+    private Integer minDaysRequired = 30;
+
+    /**
+     * Sistemde bu fon için kayıtlı toplam snapshot/PDF raporu sayısı.
+     */
+    @Builder.Default
+    private Integer availableSnapshotCount = 0;
+
+    /**
+     * Look-ahead bias olmaksızın simülasyon koşturulabilecek en erken tarih (En eski snapshot + 1 gün).
+     */
+    private LocalDate earliestTestableDate;
+
+    /**
+     * Simülasyonun koşturulduğu en son tarih.
+     */
+    private LocalDate latestTestableDate;
+
+    /**
+     * Snapshot geçişleri ve ağırlık sıfırlama olaylarının dökümü (Kronolojik).
+     */
+    private List<String> snapshotTransitionLogs;
+
+    /**
+     * Zincir Bütünlüğü ve Boşluk Kalkanı Durumları
+     */
+    public enum ChainIntegrityStatus {
+        VALID,                    //  tüm ara raporlar tam ve en güncel rapor devrede
+        MISSING_LATEST_SNAPSHOT,  // En son ayın raporu eksik, güvenli sınırda sınırlandırıldı (Smart Clamp)
+        INTERMEDIATE_GAP_DETECTED // Ara dönem atlanmış (iki snapshot arasında > 35 gün boşluk var)
+    }
+
+    /**
+     * Rapor Zincir Bütünlüğü Durumu
+     */
+    @Builder.Default
+    private ChainIntegrityStatus chainStatus = ChainIntegrityStatus.VALID;
+
+    /**
+     * Yeni dönem portföy raporunun yüklenmesi gerekiyor mu?
+     */
+    @Builder.Default
+    private boolean requiresNewerSnapshot = false;
+
+    /**
+     * Zincir denetim ve rehberlik uyarı mesajı
+     */
+    private String integrityWarningMessage;
+
+    /**
+     * Güvenli simülasyon bitiş tarihi (Smart Clamp sınırı)
+     */
+    private LocalDate safeSimulationEndDate;
+
+    /**
+     * Kayan Pencere İstatistikleri (1 Hafta: Son 5 gün, 1 Ay: Son 22 gün, 2 Ay: Son 44-60 gün)
+     */
+    private RollingWindowSummary oneWeekSummary;
+    private RollingWindowSummary oneMonthSummary;
+    private RollingWindowSummary twoMonthsSummary;
+
+    /**
+     * Toplam Test Edilen İş Günü Sayısı (Örn: 30, 45, 60)
      */
     private Integer totalDaysTested;
 
@@ -172,6 +248,11 @@ public class BacktestReportDto {
         private BigDecimal actualTefasPrice;
 
         /**
+         * Modelimizin o gün için hesapladığı tahmini birim pay fiyatı: P_t-1 * (1 + estimatedReturn)
+         */
+        private BigDecimal estimatedTefasPrice;
+
+        /**
          * TEFAS Resmi Günlük Getirisi: (P_t / P_t-1) - 1
          */
         private BigDecimal actualReturn;
@@ -205,5 +286,41 @@ public class BacktestReportDto {
          * Tolerans Durumu ("KUSURSUZ 🟢", "TOLERANS_İÇİ 🟡", "ANOMALİ 🔴")
          */
         private String toleranceStatus;
+
+        /**
+         * Başlangıçtan bugüne modelin birikimli (kümülatif) getiri eğrisi: Π (1 + R_est) - 1
+         */
+        private BigDecimal cumulativeEstimatedReturn;
+
+        /**
+         * Başlangıçtan bugüne TEFAS'ın birikimli (kümülatif) resmi getiri eğrisi: Π (1 + R_act) - 1
+         */
+        private BigDecimal cumulativeActualReturn;
+
+        /**
+         * Bu işlem gününde yeni bir portföy raporuna geçiş yapıldı mı?
+         */
+        private boolean snapshotTransitionDay;
+
+        /**
+         * Geçiş açıklaması (Örn: "30 Eylül 2026 raporu devreye girdi, ağırlıklar sıfırlandı.")
+         */
+        private String transitionRemark;
+    }
+
+    /**
+     * Kayan Pencere (Rolling Window) Özet Metrikleri
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RollingWindowSummary {
+        private String windowLabel; // "1 HAFTA (5 GÜN)", "1 AY (22 GÜN)", "2 AY (60 GÜN)"
+        private Integer daysCount;
+        private BigDecimal meanAbsoluteError;
+        private BigDecimal rootMeanSquaredError;
+        private BigDecimal directionalAccuracy;
+        private BigDecimal successRate;
     }
 }

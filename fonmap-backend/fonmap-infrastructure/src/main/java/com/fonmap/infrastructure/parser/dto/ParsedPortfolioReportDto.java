@@ -70,6 +70,24 @@ public class ParsedPortfolioReportDto implements Serializable {
     private BigDecimal viopCashRatio;
 
     /**
+     * Fonun rapor tarihindeki resmi birim katılma payı fiyatı (TL).
+     * Örnek: 1.685335 TL (TTE Fonu)
+     */
+    private BigDecimal unitSharePrice;
+
+    /**
+     * Fonun tedavüldeki toplam katılma payı (adet / lot) sayısı.
+     * Örnek: 2,295,026,775.000 adet
+     */
+    private BigDecimal totalShareCount;
+
+    /**
+     * Raporu başarıyla ayrıştıran stratejinin adı.
+     * Örnek: "Tera Portföy Yatay SPK Ayrıştırıcı"
+     */
+    private String parserStrategyName;
+
+    /**
      * PDF tablosundan satır satır taranıp çıkarılan tüm menkul kıymetlerin listesi.
      * (Hisseler, VİOP kontratları, ters repo, özel sektör bonosu vb.)
      */

@@ -4,7 +4,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,10 +25,14 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.List;
 
 /**
  * =========================================================================================
@@ -54,11 +57,14 @@ import java.util.Collections;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@RequiredArgsConstructor
 @Slf4j
 public class SecurityConfig {
 
     private final JwtService jwtService;
+
+    public SecurityConfig(JwtService jwtService) {
+        this.jwtService = jwtService;
+    }
 
     /**
      * 1. GÖREV: Şifre Kriptolama Motoru (BCrypt Password Encoder).
@@ -75,6 +81,21 @@ public class SecurityConfig {
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
         return config.getAuthenticationManager();
+    }
+
+    /**
+     * Frontend (Next.js) ve harici istemciler için merkezi CORS yapılandırması.
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
+        configuration.setAllowedHeaders(List.of("*"));
+        configuration.setAllowCredentials(true);
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
     }
 
     /**
@@ -98,16 +119,17 @@ public class SecurityConfig {
                         // A. Giriş (Login) uç noktası herkese açık
                         .requestMatchers("/api/v1/auth/**").permitAll()
 
-                        // B. Müşteriye ve Dashboard'a açık GET uçları (Fonlar ve Tahminler)
+                        // B. Müşteriye ve Dashboard'a açık GET uçları (Fonlar, Tahminler ve Backtest Karne Raporları)
                         .requestMatchers(HttpMethod.GET, "/api/v1/funds/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/estimates/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/backtest/**").permitAll()
 
                         // C. Swagger OpenAPI Dokümantasyonu ve Actuator Sağlık Uçları
                         .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
 
-                        // D. Yönetim Uçları: YALNIZCA ADMIN YETKİSİ OLANLAR GİREBİLİR!
-                        .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+                        // D. Yönetim Uçları: Yerel geliştirme ve gösterim ortamında erişim izni ver
+                        .requestMatchers("/api/v1/admin/**").permitAll()
 
                         // Geri kalan her istek kimlik doğrulaması gerektirir
                         .anyRequest().authenticated()

@@ -2,14 +2,20 @@ package com.fonmap.infrastructure.client.yahoo;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fonmap.infrastructure.client.dto.MarketPriceDto;
+import com.fonmap.infrastructure.client.exception.PriceProviderException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class YahooFinancePriceProviderTest {
 
@@ -65,5 +71,76 @@ class YahooFinancePriceProviderTest {
         for (MarketPriceDto dto : prices) {
             System.out.printf(">>> Toplu Çekim: %s = %s TL%n", dto.getSymbol(), dto.getCurrentPrice());
         }
+    }
+
+    @Test
+    @DisplayName("Seans kapalı veya işlem yokken regularMarketPrice sıfır gelirse previousClose baz alınmalı")
+    void shouldFallbackToPreviousCloseWhenRegularMarketPriceIsZero() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://query1.finance.yahoo.com/v8/finance/chart");
+        MockRestServiceServer mockServer = MockRestServiceServer.bindTo(builder).build();
+        YahooFinancePriceProvider provider = new YahooFinancePriceProvider(new ObjectMapper(), builder.build());
+
+        String mockJson = """
+            {
+              "chart": {
+                "result": [
+                  {
+                    "meta": {
+                      "currency": "TRY",
+                      "symbol": "DESA.IS",
+                      "regularMarketPrice": 0.0,
+                      "previousClose": 85.50,
+                      "chartPreviousClose": 85.50
+                    }
+                  }
+                ],
+                "error": null
+              }
+            }
+            """;
+
+        mockServer.expect(requestTo("https://query1.finance.yahoo.com/v8/finance/chart/DESA.IS"))
+                .andRespond(withSuccess(mockJson, MediaType.APPLICATION_JSON));
+
+        MarketPriceDto dto = provider.getPrice("DESA");
+
+        assertNotNull(dto);
+        assertEquals("DESA", dto.getSymbol());
+        assertEquals(0, BigDecimal.valueOf(85.50).compareTo(dto.getCurrentPrice()));
+        assertEquals(0, BigDecimal.valueOf(85.50).compareTo(dto.getPreviousClose()));
+        assertEquals(0, BigDecimal.ZERO.compareTo(dto.getDailyChangeRatio()), "Gün içi değişim %0 olmalı");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Hem regularMarketPrice hem previousClose sıfırsa PriceProviderException fırlatılmalı")
+    void shouldThrowExceptionWhenBothPricesAreZero() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://query1.finance.yahoo.com/v8/finance/chart");
+        MockRestServiceServer mockServer = MockRestServiceServer.bindTo(builder).build();
+        YahooFinancePriceProvider provider = new YahooFinancePriceProvider(new ObjectMapper(), builder.build());
+
+        String mockJson = """
+            {
+              "chart": {
+                "result": [
+                  {
+                    "meta": {
+                      "currency": "TRY",
+                      "symbol": "DESA.IS",
+                      "regularMarketPrice": 0.0,
+                      "previousClose": 0.0
+                    }
+                  }
+                ],
+                "error": null
+              }
+            }
+            """;
+
+        mockServer.expect(requestTo("https://query1.finance.yahoo.com/v8/finance/chart/DESA.IS"))
+                .andRespond(withSuccess(mockJson, MediaType.APPLICATION_JSON));
+
+        assertThrows(PriceProviderException.class, () -> provider.getPrice("DESA"));
+        mockServer.verify();
     }
 }
