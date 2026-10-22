@@ -108,7 +108,7 @@ flowchart TD
     S4 --> Race
     S5 --> Race
     Race --> Exec["Ayrıştırma Çalıştırılır"]
-    Exec --> Sanity{"Sanity Check: Holdings >= 3 ve Ağırlık >= %40"}
+    Exec --> Sanity{"Sanity Check: Holdings en az 3 ve Ağırlık en az %40"}
     Sanity -->|Geçti| Success["Veritabanına / Önizlemeye Aktarılır"]
     Sanity -->|Kaldı| Fallback["Cascade Fallback: Sıradaki Aday Strateji Devreye Girer"]
 ```
@@ -126,7 +126,11 @@ flowchart TD
 Hesaplama motoru (`ReturnCalculationService`), şartnamedeki formüllere tam sadakatle çalışır. Finansal piyasa gerçekleri doğrultusunda uygulanan varsayımlar ve proxy modelleri aşağıda açıkça belirtilmiştir:
 
 ### 4.1. Temel Getiri Formülü (Formül 4.1)
-$$r_{\text{fon}}(t) = \sum_{i=1}^{N} \left( w_i(t) \times r_i(t) \right) - \frac{\text{AnnualFeeRatio}}{252}$$
+
+$$
+r_{\text{fon}}(t) = \sum_{i=1}^{N} \left( w_i(t) \times r_i(t) \right) - \frac{\text{AnnualFeeRatio}}{252}
+$$
+
 * $w_i(t)$: Varlığın sabah 09:50'de mühürlenen dinamik açılış ağırlığı.
 * $r_i(t) = \frac{P_{i,t}}{P_{i,0}} - 1$: Varlığın dünkü borsa kapanışına ($P_{i,0}$) göre anlık borsa getirisi.
 * $\frac{\text{AnnualFeeRatio}}{252}$: SPK onaylı yıllık yönetim giderinin işlem günü (252) bazında sepetten günlük düşümü.
@@ -144,7 +148,11 @@ Finansal piyasalarda her varlığın canlı tahta verisi bulunmayabilir. Sistemi
 | **Nakit Teminatlar** | `DEPOSIT` | Repo faiz oranı üzerinden günlük nemalandırılır. | Fonun VİOP için Takasbank'ta tuttuğu nakit teminat nema getirisi üretir. |
 
 ### 4.3. Kapsama Oranı ve Güven Seviyesi Eşikleri (Formül 4.6)
-$$\text{Kapsama Orani} = \frac{\sum_{i \in \text{Canli Fiyat}} w_i}{\sum_{j \in \text{Tum Portfoy}} w_j} \times 100$$
+
+$$
+\text{Kapsama Orani} = \frac{\sum_{i \in \text{Canli Fiyat}} w_i}{\sum_{j \in \text{Tum Portfoy}} w_j} \times 100
+$$
+
 * **$\ge$ %85** $\rightarrow$ 🟢 **YÜKSEK GÜVEN (HIGH):** Portföyün ezici çoğunluğu anlık tahta verisiyle fiyatlanıyor.
 * **%70 – %85** $\rightarrow$ 🟡 **ORTA GÜVEN (MEDIUM):** Portföyde repo veya tahvil ağırlığı yüksek.
 * **$<$ %70** $\rightarrow$ 🔴 **DÜŞÜK GÜVEN (LOW):** Fiyatlanamayan kalem oranı yüksek; panelde kullanıcıya uyarı gösterilir.
@@ -159,7 +167,10 @@ Borsa İstanbul Pay Piyasası'nda hisselerin günlük tavan/taban marjı **±%10
 KAP raporu ayda bir ($t_0$) yayımlanır. Rapor yayımlandıktan sonra portföy yöneticisi hiçbir işlem yapmasa dahi hisselerin fiyatı farklı oranlarda arttığı için sepet içindeki ağırlıkları kendiliğinden kayar (Weight Drift).
 
 ### Matematiksel Model (Formül 4.2)
-$$w_i(t) = \frac{w_i(t_0) \times \frac{P_i(t-1)}{P_i(t_0)}}{\sum_{j=1}^{n} \left[ w_j(t_0) \times \frac{P_j(t-1)}{P_j(t_0)} \right]}$$
+
+$$
+w_i(t) = \frac{w_i(t_0) \times \frac{P_i(t-1)}{P_i(t_0)}}{\sum_{j=1}^{n} \left[ w_j(t_0) \times \frac{P_j(t-1)}{P_j(t_0)} \right]}
+$$
 * $P_i(t-1)$: Hissenin dünkü borsa kapanış fiyatıdır.
 * Paydada toplam daima tam **%100 (1.000000)** olarak normalize edilir.
 
@@ -324,7 +335,11 @@ flowchart TD
 
 ### Point-in-Time Kuralı ve Lookahead Bias Kalkanı
 Backtest simülasyonu ($t$ günü için) çalışırken sisteme gelecekteki verinin sızmasını engellemek için katı **Point-in-Time** kuralı işletilir:
-$$\text{SnapshotTarihi} < t$$
+
+$$
+\text{SnapshotTarihi} < t
+$$
+
 Örneğin, 30 Eylül seansında 31 Ağustos portföyü yürürlüktedir. 1 Ekim sabahı 30 Eylül raporu devreye girdiğinde biriken ağırlık kayması sıfırlanır (`Rebalancing Event`) ve yeni resmi portföy ağırlıklarına geçilir.
 
 ### Ekonometrik Hata Metrikleri
