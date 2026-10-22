@@ -29,11 +29,16 @@ desktop.ini
 .env
 .env.local
 
-# Markdown çalışma ve rehber notları
+# Markdown çalışma ve rehber notları (Sadece ve sadece ana README.md takip edilir)
 *.md
 **/*.md
 !README.md
+stajbelge/
 
 # Örnek PDF raporları klasörü
 samples/
 **/samples/
+
+cookies.txt
+*.cookies
+.env

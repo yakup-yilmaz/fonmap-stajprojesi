@@ -8,9 +8,10 @@ services:
     environment:
       POSTGRES_DB: fonmap_db
       POSTGRES_USER: fonmap_user
-      POSTGRES_PASSWORD: fonmap_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fonmap_password}
+      TZ: Europe/Istanbul
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +24,10 @@ services:
     image: redis:7-alpine
     container_name: fonmap-redis
     restart: unless-stopped
+    environment:
+      - TZ=Europe/Istanbul
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -42,15 +45,36 @@ services:
     ports:
       - "8080:8080"
     environment:
+      - TZ=Europe/Istanbul
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/fonmap_db
       - SPRING_DATASOURCE_USERNAME=fonmap_user
-      - SPRING_DATASOURCE_PASSWORD=fonmap_password
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-fonmap_password}
+      - FONMAP_JWT_SECRET=${FONMAP_JWT_SECRET:-}
       - SPRING_REDIS_HOST=redis
       - SPRING_REDIS_PORT=6379
+      - FONMAP_POLICY_RATE=${FONMAP_POLICY_RATE:-0.370000}
     depends_on:
       - postgres
       - redis
 
+  frontend:
+    build:
+      context: ./fonmap-frontend
+      dockerfile: Dockerfile
+    container_name: fonmap-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - TZ=Europe/Istanbul
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
+    volumes:
+      - ./fonmap-frontend/src:/app/src
+      - ./fonmap-frontend/public:/app/public
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   redis_data:
+
