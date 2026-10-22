@@ -55,20 +55,21 @@ Bir fon sisteme ilk girdiği andan gece mutabakatına kadar veriler modüller ve
 
 ```mermaid
 flowchart TD
-    A[Admin Yeni Fon Kodunu Girer: 'TTE'] --> B[(funds)]
-    B --> C[Scraper KAP'ı Tarar & PDF İndirir]
+    A["Admin Yeni Fon Kodunu Girer: 'TTE'"] --> B[(funds)]
+    B --> C["Scraper KAP'ı Tarar ve PDF İndirir"]
     C --> D[(fund_reports)]
-    D --> E[PDFBox Content Sniffing ile Tabloyu Ayrıştırır]
+    D --> E["PDFBox Content Sniffing ile Tabloyu Ayrıştırır"]
     E --> F[(fund_snapshots)]
     F --> G[(holdings)]
-    G --> H{Kanonik Enstrüman Eşleme}
+    G --> H{"Kanonik Enstrüman Eşleme"}
     H --> I[(instruments)]
     H --> J[(instrument_aliases)]
-    K[Price Worker Canlı Fiyat Çeker] --> L[(price_quotes)]
-    L & G --> M[Calculation Engine Tahmin Üretir]
+    K["Price Worker Canlı Fiyat Çeker"] --> L[(price_quotes)]
+    L --> M["Calculation Engine Tahmin Üretir"]
+    G --> M
     M --> N[(estimate_runs)]
     N --> O[(estimate_details)]
-    P[Gece 23:00 TEFAS Fiyatı Açıklanır] --> Q[(reconciliation_results)]
+    P["Gece 23:00 TEFAS Fiyatı Açıklanır"] --> Q[(reconciliation_results)]
 ```
 
 ### Katmanlı Mimari Sorumlulukları (Clean Architecture)
@@ -94,18 +95,22 @@ Sistemimiz, kurucu adı veya fon koduna bağımlı kalmadan **dosyanın kendi i�
 
 ```mermaid
 flowchart TD
-    PDF[Gelen Ham PDF Baytları: byte[]] --> Sniff{Content Sniffing Motoru}
-    Sniff -->|Puanlama: SPK Başlıkları, Landscape Boyutu| S1[SpkLandscapePdfParser]
-    Sniff -->|Puanlama: Takasbank ID Kontrolü, İngilizce Format| S2[IsPortfoyPdfParser]
-    Sniff -->|Puanlama: Dikey Sayfa, Atlas Başlıkları| S3[AtlasPdfParser]
-    Sniff -->|Puanlama: Pardus Düzeni| S4[PardusPdfParser]
-    Sniff -->|Puanlama: Güvenlik Ağı| S5[GenericVerticalPdfParser]
+    PDF["Gelen Ham PDF Baytları: byte[]"] --> Sniff{"Content Sniffing Motoru"}
+    Sniff -->|"Puanlama: SPK Başlıkları, Landscape Boyutu"| S1[SpkLandscapePdfParser]
+    Sniff -->|"Puanlama: Takasbank ID Kontrolü, İngilizce Format"| S2[IsPortfoyPdfParser]
+    Sniff -->|"Puanlama: Dikey Sayfa, Atlas Başlıkları"| S3[AtlasPdfParser]
+    Sniff -->|"Puanlama: Pardus Düzeni"| S4[PardusPdfParser]
+    Sniff -->|"Puanlama: Güvenlik Ağı"| S5[GenericVerticalPdfParser]
     
-    S1 & S2 & S3 & S4 & S5 --> Race[En Yüksek Sniff Skorunu Alan Strateji Seçilir]
-    Race --> Exec[Ayrıştırma Çalıştırılır]
-    Exec --> Sanity{Sanity Check: Holdings >= 3 & Ağırlık >= %40}
-    Sanity -->|Geçti| Success[Veritabanına / Önizlemeye Aktarılır]
-    Sanity -->|Kaldı| Fallback[Cascade Fallback: Sıradaki Aday Strateji Devreye Girer]
+    S1 --> Race["En Yüksek Sniff Skorunu Alan Strateji Seçilir"]
+    S2 --> Race
+    S3 --> Race
+    S4 --> Race
+    S5 --> Race
+    Race --> Exec["Ayrıştırma Çalıştırılır"]
+    Exec --> Sanity{"Sanity Check: Holdings >= 3 ve Ağırlık >= %40"}
+    Sanity -->|Geçti| Success["Veritabanına / Önizlemeye Aktarılır"]
+    Sanity -->|Kaldı| Fallback["Cascade Fallback: Sıradaki Aday Strateji Devreye Girer"]
 ```
 
 #### Content Sniffing Puanlama Kuralları:
@@ -121,10 +126,10 @@ flowchart TD
 Hesaplama motoru (`ReturnCalculationService`), şartnamedeki formüllere tam sadakatle çalışır. Finansal piyasa gerçekleri doğrultusunda uygulanan varsayımlar ve proxy modelleri aşağıda açıkça belirtilmiştir:
 
 ### 4.1. Temel Getiri Formülü (Formül 4.1)
-$$r_{\text{fon}}(t) = \sum_{i=1}^{N} \left( w_i(t) \times r_i(t) \right) - \frac{\text{annual\_fee\_ratio}}{252}$$
+$$r_{\text{fon}}(t) = \sum_{i=1}^{N} \left( w_i(t) \times r_i(t) \right) - \frac{\text{AnnualFeeRatio}}{252}$$
 * $w_i(t)$: Varlığın sabah 09:50'de mühürlenen dinamik açılış ağırlığı.
 * $r_i(t) = \frac{P_{i,t}}{P_{i,0}} - 1$: Varlığın dünkü borsa kapanışına ($P_{i,0}$) göre anlık borsa getirisi.
-* $\frac{\text{annual\_fee\_ratio}}{252}$: SPK onaylı yıllık yönetim giderinin işlem günü (252) bazında sepetten günlük düşümü.
+* $\frac{\text{AnnualFeeRatio}}{252}$: SPK onaylı yıllık yönetim giderinin işlem günü (252) bazında sepetten günlük düşümü.
 
 ### 4.2. Varlık Bazlı Fiyatlama Varsayımları ve Proxy Modelleri
 Finansal piyasalarda her varlığın canlı tahta verisi bulunmayabilir. Sistemimizin uyguladığı proxy metodolojisi şeffaf olarak kayıt altına alınmıştır:
@@ -139,13 +144,13 @@ Finansal piyasalarda her varlığın canlı tahta verisi bulunmayabilir. Sistemi
 | **Nakit Teminatlar** | `DEPOSIT` | Repo faiz oranı üzerinden günlük nemalandırılır. | Fonun VİOP için Takasbank'ta tuttuğu nakit teminat nema getirisi üretir. |
 
 ### 4.3. Kapsama Oranı ve Güven Seviyesi Eşikleri (Formül 4.6)
-$$\text{Kapsama Oranı} = \frac{\sum_{i \in \text{Canlı Fiyat}} w_i}{\sum_{j \in \text{Tüm Portföy}} w_j} \times 100$$
-* $\ge \%85$ $\rightarrow$ 🟢 **YÜKSEK GÜVEN (HIGH):** Portföyün ezici çoğunluğu anlık tahta verisiyle fiyatlanıyor.
-* $\%70 - \%85$ $\rightarrow$ 🟡 **ORTA GÜVEN (MEDIUM):** Portföyde repo veya tahvil ağırlığı yüksek.
-* $< \%70$ $\rightarrow$ 🔴 **DÜŞÜK GÜVEN (LOW):** Fiyatlanamayan kalem oranı yüksek; panelde kullanıcıya uyarı gösterilir.
+$$\text{Kapsama Orani} = \frac{\sum_{i \in \text{Canli Fiyat}} w_i}{\sum_{j \in \text{Tum Portfoy}} w_j} \times 100$$
+* **$\ge$ %85** $\rightarrow$ 🟢 **YÜKSEK GÜVEN (HIGH):** Portföyün ezici çoğunluğu anlık tahta verisiyle fiyatlanıyor.
+* **%70 – %85** $\rightarrow$ 🟡 **ORTA GÜVEN (MEDIUM):** Portföyde repo veya tahvil ağırlığı yüksek.
+* **$<$ %70** $\rightarrow$ 🔴 **DÜŞÜK GÜVEN (LOW):** Fiyatlanamayan kalem oranı yüksek; panelde kullanıcıya uyarı gösterilir.
 
 ### 4.4. Finansal Devre Kesici (Outlier Sanity Guard)
-Borsa İstanbul Pay Piyasası'nda hisselerin günlük tavan/taban marjı $\pm\%10$'dur. Fon portföyünde kaldıraç harici net getirinin $\pm\%12$'yi aşması finansal olarak imkânsızdır. Sistem, hesaplanan net getiri $|\text{return}| > 0.12$ olduğunda devreye giren bir koruma kalkanı içerir: değer $\pm\%10.00$'a klemplenir ve güven seviyesi zorunlu olarak `LOW` yapılır.
+Borsa İstanbul Pay Piyasası'nda hisselerin günlük tavan/taban marjı **±%10**'dur. Fon portföyünde kaldıraç harici net getirinin **±%12**'yi aşması finansal olarak imkânsızdır. Sistem, hesaplanan net getiri $|\text{return}| > 0.12$ olduğunda devreye giren bir koruma kalkanı içerir: değer **±%10.00**'a klemplenir ve güven seviyesi zorunlu olarak `LOW` yapılır.
 
 ---
 
@@ -186,20 +191,20 @@ Spring Boot uygulaması ayağa kalktığında `@Order(10)` önceliğiyle `Startu
 
 ```mermaid
 flowchart TD
-    Start([Sistem Açılışı: StartupCatchupRunner]) --> Step1[1. Eksik KAP Raporlarını Tara]
-    Step1 --> CheckKap{Son Ay Sonu Raporu Var mı?}
-    CheckKap -->|Yok| FetchKap[KAP'tan İndir & Ayrıştır & Kaydet]
-    CheckKap -->|Var| Step2[2. Çok Günlük TEFAS Mutabakatını Tara]
+    Start(["Sistem Açılışı: StartupCatchupRunner"]) --> Step1["1. Eksik KAP Raporlarını Tara"]
+    Step1 --> CheckKap{"Son Ay Sonu Raporu Var mı?"}
+    CheckKap -->|Yok| FetchKap["KAP'tan İndir ve Ayrıştır"]
+    CheckKap -->|Var| Step2["2. Çok Günlük TEFAS Mutabakatını Tara"]
     FetchKap --> Step2
     
-    Step2 --> CheckGap{Son 15 Günde Doğrulanmamış Seans Var mı?}
-    CheckGap -->|Yok / Hafta Sonu| Step3[3. Sabah 09:50 Ağırlık Kaymasını Denetle]
-    CheckGap -->|Boşluk Tespit Edildi| LoopGap[Kronolojik Telafi: İş Günü Boyunca Reconcile Et & Mühürle]
+    Step2 --> CheckGap{"Son 15 Günde Doğrulanmamış Seans Var mı?"}
+    CheckGap -->|Yok / Hafta Sonu| Step3["3. Sabah 09:50 Ağırlık Kaymasını Denetle"]
+    CheckGap -->|Boşluk Tespit Edildi| LoopGap["Kronolojik Telafi: Seansları Reconcile Et"]
     LoopGap --> Step3
     
-    Step3 --> CheckDrift{Bugünün 09:50 Kalibrasyonu Yapıldı mı?}
-    CheckDrift -->|Evet / Tatil Günü| Done([Açılış Telafisi Tamamlandı - Sistem Hazır])
-    CheckDrift -->|Hayır, Kaçırılmış| CalibrateDrift[T-1 Kapanışlarıyla Ağırlıkları Hesapla & daily_holding_drift'e Mühürle]
+    Step3 --> CheckDrift{"Bugünün 09:50 Kalibrasyonu Yapıldı mı?"}
+    CheckDrift -->|Evet / Tatil Günü| Done(["Açılış Telafisi Tamamlandı - Sistem Hazır"])
+    CheckDrift -->|Hayır, Kaçırılmış| CalibrateDrift["T-1 Kapanışlarıyla Ağırlıkları Hesapla ve Mühürle"]
     CalibrateDrift --> Done
 ```
 
@@ -267,9 +272,9 @@ Dış dünyadan gelen ham verilerin DTO'lar aracılığıyla işlenip kalıcı E
 ```mermaid
 flowchart TD
     subgraph DIS_DUNYA["Dış Dünya Kaynakları"]
-        A1[KAP Portföy Raporu PDF]
-        A2[Yahoo / Bigpara / TCMB API]
-        A3[TEFAS Resmi REST API]
+        A1["KAP Portföy Raporu PDF"]
+        A2["Yahoo / Bigpara / TCMB API"]
+        A3["TEFAS Resmi REST API"]
     end
 
     subgraph DTO_KATMANI["DTO Taşıma Paketleri (RAM)"]
@@ -294,20 +299,22 @@ flowchart TD
 
     A1 -->|KapClient| B1
     B1 -->|PdfParserStrategy| B2
-    B1 -->|Hash & URL Kaydı| C1
+    B1 -->|"Hash ve URL Kaydı"| C1
     B2 -->|PdfImportService| C2
-    B2 -->|PdfImportService & Alias Matching| C3
+    B2 -->|"Alias Matching"| C3
     
     A2 -->|PriceService| B3
     B3 -->|Dual-Write| C4
     
-    C3 & C4 -->|WeightDrift & ReturnEngine| B4
+    C3 -->|"ReturnEngine"| B4
+    C4 -->|"ReturnEngine"| B4
     B4 -->|Hisse Kırılımı| B5
     B4 -->|Tahmin Kaydı| C5
-    B5 -->|Dinamik Ağırlık & Katkı| C6
+    B5 -->|"Katkı Detayı"| C6
     
     A3 -->|TefasClient| B6
-    B6 & C5 -->|ReconciliationService| B7
+    B6 -->|ReconciliationService| B7
+    C5 -->|ReconciliationService| B7
     B7 -->|Gün Sonu Karşılaştırma| C7
 ```
 
@@ -317,15 +324,15 @@ flowchart TD
 
 ### Point-in-Time Kuralı ve Lookahead Bias Kalkanı
 Backtest simülasyonu ($t$ günü için) çalışırken sisteme gelecekteki verinin sızmasını engellemek için katı **Point-in-Time** kuralı işletilir:
-$$\text{Kullanılan Snapshot Tarihi} < t$$
+$$\text{SnapshotTarihi} < t$$
 Örneğin, 30 Eylül seansında 31 Ağustos portföyü yürürlüktedir. 1 Ekim sabahı 30 Eylül raporu devreye girdiğinde biriken ağırlık kayması sıfırlanır (`Rebalancing Event`) ve yeni resmi portföy ağırlıklarına geçilir.
 
 ### Ekonometrik Hata Metrikleri
 Her fon için son 60 iş gününün simülasyon sonuçları TEFAS ile kıyaslanır:
-* $\text{Hata} = \text{Tahmin} - \text{Gerçek}$
+* $\text{Hata} = \text{Tahmin} - \text{Gercek}$
 * $\text{MAE} = \frac{1}{N} \sum |\text{Hata}|$ (Ortalama Mutlak Hata)
 * $\text{RMSE} = \sqrt{\frac{1}{N} \sum \text{Hata}^2}$ (Kök Ortalama Kare Hata)
-* **Yönsel Doğruluk:** Fonun artış veya azalış yönünün doğru tahmin edilme oranı ($\text{sign}(\text{tahmin}) == \text{sign}(\text{gerçek})$).
+* **Yönsel Doğruluk:** Fonun artış veya azalış yönünün doğru tahmin edilme oranı ($\text{sign}(\text{tahmin}) = \text{sign}(\text{gercek})$).
 
 ---
 
