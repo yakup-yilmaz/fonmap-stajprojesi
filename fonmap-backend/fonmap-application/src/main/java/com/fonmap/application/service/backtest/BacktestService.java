@@ -139,7 +139,7 @@ public class BacktestService {
         }
 
         BacktestReportDto report = runBacktest(fundCode, startDate, endDate);
-        if (backtestCacheService != null && report != null && "SUCCESS".equalsIgnoreCase(report.getStatus())) {
+        if (backtestCacheService != null && report != null && report.getDailyRecords() != null && !report.getDailyRecords().isEmpty()) {
             backtestCacheService.put(fundCode, startDate, endDate, report);
         }
         return report;

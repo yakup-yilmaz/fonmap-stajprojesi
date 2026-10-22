@@ -145,4 +145,16 @@ class StartupCatchupServiceTest {
         // Zaten kalibre edilmiş veya tatil günü olduğu için, weightDriftService asla çağrılmamalıdır
         verify(weightDriftService, never()).calibrateAndSaveDriftForLatestFundSnapshot(anyString(), any(LocalDate.class));
     }
+
+    @Test
+    @DisplayName("KAP Eksik Rapor Telafi Testi: Fonun zaten raporu varsa KAP taranmadan atlamalıdır")
+    void testCatchupMissingKapReports_WhenReportsExist_Skips() {
+        when(fundRepository.findAllActiveFundsOrdered()).thenReturn(List.of(sampleFund));
+        when(fundReportRepository.findByFundIdOrderByReportDateDesc(fundId))
+                .thenReturn(List.of(com.fonmap.domain.entity.FundReport.builder().reportDate(LocalDate.now()).build()));
+
+        startupCatchupService.catchupMissingKapReportsIfMissed();
+
+        verify(kapClient, never()).fetchPdf(any(), any(), any(), any());
+    }
 }

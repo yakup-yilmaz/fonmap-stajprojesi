@@ -2,6 +2,7 @@ package com.fonmap.infrastructure.client.kap;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -9,6 +10,7 @@ import java.nio.file.Files;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
+@Disabled("Yerel ham PDF inceleme testi - CI ortamında çalıştırılmaz")
 public class KapRawDownloadTest {
 
     @Test

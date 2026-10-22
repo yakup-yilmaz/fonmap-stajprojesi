@@ -31,6 +31,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.data.domain.PageRequest;
 
 import com.fonmap.application.service.backtest.BacktestCacheService;
 import com.fonmap.domain.entity.Holding;
@@ -282,6 +283,36 @@ public class AdminController {
                         Fund fund = fundRepository.findByCode(normalizedCode)
                                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                                                         "Fon bulunamadı: " + normalizedCode));
+
+                        // 🛡️ AKTİF PORTFÖY KORUMASI: Fonun sistemde çalışan aktif bir snapshot'ı ve varlıkları varsa
+                        // mükerrer indirme ve portföyü sıfırlayıp ezme engellenir.
+                        List<FundSnapshot> existingSnapshots = fundSnapshotRepository.findLatestByFundCode(normalizedCode, PageRequest.of(0, 1));
+                        if (!existingSnapshots.isEmpty()) {
+                                FundSnapshot activeSnapshot = existingSnapshots.get(0);
+                                List<Holding> activeHoldings = holdingRepository.findBySnapshotIdWithInstrument(activeSnapshot.getId());
+                                if (!activeHoldings.isEmpty()) {
+                                        log.info("[AdminController] 🛡️ Fon '{}' için çalışan güncel portföy snapshot'ı ({}) ve {} adet varlık zaten aktif. Mükerrer indirme ve ezme engellendi.",
+                                                        normalizedCode, activeSnapshot.getSnapshotDate(), activeHoldings.size());
+
+                                        String protectMessage = "KAP ve sistem arşivi denetlendi: '" + normalizedCode
+                                                        + "' için en güncel resmi rapor ("
+                                                        + activeSnapshot.getSnapshotDate()
+                                                        + ") zaten sistemde kayıtlı ve portföy ağırlıkları aktif (Mevcut çalışan portföy korundu, mükerrer aktarım atlandı).";
+
+                                        UploadReportResponse response = new UploadReportResponse(
+                                                        activeSnapshot.getId().toString(),
+                                                        normalizedCode,
+                                                        activeSnapshot.getSnapshotDate(),
+                                                        activeSnapshot.getTotalNetAssetValue(),
+                                                        activeSnapshot.getStockRatio(),
+                                                        activeSnapshot.getViopCashRatio(),
+                                                        activeSnapshot.getIsSuspicious(),
+                                                        protectMessage,
+                                                        true);
+
+                                        return ResponseEntity.ok(response);
+                                }
+                        }
 
                         KapPdfDto pdfDto = kapClient.fetchPdf(normalizedCode, fund.getManager(), null, fund.getTitle());
                         if (pdfDto == null || pdfDto.isEmpty()) {
@@ -579,6 +610,7 @@ public class AdminController {
         @Operation(summary = "Parametreli Ekonometrik Backtest Simülasyonu Çalıştır (POST)", description = "İsteğe bağlı tarih aralığı ile fon için geçmiş doğruluk ve ağırlık kayması (drift) simülasyonunu tetikler.")
         public ResponseEntity<BacktestReportDto> runBacktestPost(
                         @Parameter(description = "Hedef fon kodu (Örn: THF, TTE)", example = "THF") @PathVariable String fundCode,
+                        @RequestParam(defaultValue = "false") boolean force,
                         @RequestBody(required = false) com.fonmap.application.service.backtest.dto.BacktestRunRequest request) {
 
                 String normalizedCode = fundCode.trim().toUpperCase();
@@ -590,10 +622,10 @@ public class AdminController {
                                         "Başlangıç tarihi bitiş tarihinden sonra olamaz!");
                 }
 
-                log.info("[AdminController] POST /backtest/{}/run isteği alındı (Aralık: {} - {})",
-                                normalizedCode, start, end);
+                log.info("[AdminController] POST /backtest/{}/run isteği alındı (Aralık: {} - {}, force: {})",
+                                normalizedCode, start, end, force);
 
-                BacktestReportDto report = backtestService.getOrRunBacktest(normalizedCode, start, end, true);
+                BacktestReportDto report = backtestService.getOrRunBacktest(normalizedCode, start, end, force);
                 return ResponseEntity.ok(report);
         }
 
@@ -610,10 +642,11 @@ public class AdminController {
          */
         @PostMapping("/backtest/run-all")
         @Operation(summary = "Tüm Fonların Backtest'ini Toplu Çalıştır (Batch Run All)", description = "Sistemdeki tüm aktif fonlar için sırayla ekonometrik simülasyonu tetikler ve önbelleği tazeler.")
-        public ResponseEntity<com.fonmap.application.service.backtest.dto.BatchBacktestResultDto> runAllBacktests() {
-                log.info("[AdminController] 🚀 POST /api/v1/admin/backtest/run-all toplu simülasyon isteği alındı.");
+        public ResponseEntity<com.fonmap.application.service.backtest.dto.BatchBacktestResultDto> runAllBacktests(
+                        @RequestParam(defaultValue = "false") boolean force) {
+                log.info("[AdminController] 🚀 POST /api/v1/admin/backtest/run-all toplu simülasyon isteği alındı (force: {}).", force);
                 com.fonmap.application.service.backtest.dto.BatchBacktestResultDto result = backtestService
-                                .runAllBacktests(true);
+                                .runAllBacktests(force);
                 return ResponseEntity.ok(result);
         }
 

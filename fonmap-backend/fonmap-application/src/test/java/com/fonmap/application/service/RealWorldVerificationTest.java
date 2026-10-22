@@ -19,6 +19,7 @@ import com.fonmap.infrastructure.parser.dto.ParsedPortfolioReportDto;
 import com.fonmap.infrastructure.parser.factory.PdfParserFactory;
 import com.fonmap.infrastructure.parser.strategy.*;
 import com.fonmap.infrastructure.repository.*;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -79,13 +80,7 @@ class RealWorldVerificationTest {
         System.out.println("================================================================================");
 
         // 1. AŞAMA: Gerçek PDF Dosyasını Oku (31 Ağustos 2026)
-        File pdfFile = new File("../../samples/THF_2026_08.pdf");
-        if (!pdfFile.exists()) {
-            pdfFile = new File("../samples/THF_2026_08.pdf");
-        }
-        if (!pdfFile.exists()) {
-            pdfFile = new File("c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/THF_2026_08.pdf");
-        }
+        File pdfFile = resolveSampleFile("THF_2026_08.pdf");
 
         byte[] pdfBytes = Files.readAllBytes(pdfFile.toPath());
         TeraPdfParser parser = new TeraPdfParser();
@@ -345,9 +340,7 @@ class RealWorldVerificationTest {
     @Test
     @DisplayName("THF PDF Derin Analizi: Rapor Verileri ile Sistem Kıyaslaması")
     void inspectThfPdfStructure() throws Exception {
-        File pdfFile = new File("../../samples/THF_2026_08.pdf");
-        if (!pdfFile.exists()) pdfFile = new File("../samples/THF_2026_08.pdf");
-        if (!pdfFile.exists()) pdfFile = new File("c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/THF_2026_08.pdf");
+        File pdfFile = resolveSampleFile("THF_2026_08.pdf");
 
         byte[] pdfBytes = Files.readAllBytes(pdfFile.toPath());
         TeraPdfParser parser = new TeraPdfParser();
@@ -427,9 +420,7 @@ class RealWorldVerificationTest {
         System.out.println(">>> 📊 YÜKSEK BONOLU FON ANALİZİ (TLY) BAŞLATILIYOR <<<");
         System.out.println("================================================================================");
 
-        File pdfFile = new File("../../samples/TLY_2026_08.pdf");
-        if (!pdfFile.exists()) pdfFile = new File("../samples/TLY_2026_08.pdf");
-        if (!pdfFile.exists()) pdfFile = new File("c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/TLY_2026_08.pdf");
+        File pdfFile = resolveSampleFile("TLY_2026_08.pdf");
 
         byte[] pdfBytes = Files.readAllBytes(pdfFile.toPath());
         TeraPdfParser parser = new TeraPdfParser();
@@ -675,6 +666,8 @@ class RealWorldVerificationTest {
         if (!f.exists()) {
             f = new File("c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/" + fileName);
         }
+        Assumptions.assumeTrue(f.exists(),
+                "Yerel 'samples/" + fileName + "' dosyası bulunamadı (CI ortamı). Bu entegrasyon testi atlanıyor.");
         return f;
     }
 

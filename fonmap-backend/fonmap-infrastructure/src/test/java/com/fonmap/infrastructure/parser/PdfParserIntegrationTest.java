@@ -120,14 +120,18 @@ class PdfParserIntegrationTest {
     @Test
     @DisplayName("3. THF Temmuz ve Ağustos Varlık Sınıfları ve Kapsama Oranı Analizi")
     void testInspectNewPdf() throws Exception {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
         TeraPdfParser parser = new TeraPdfParser();
-        analyzeReport(parser, "c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/THF_2026_07.pdf", "TEMMUZ 2026");
-        analyzeReport(parser, "c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/THF_2026_08.pdf", "AĞUSTOS 2026");
+        analyzeReport(parser, "samples/THF_2026_07.pdf", "TEMMUZ 2026");
+        analyzeReport(parser, "samples/THF_2026_08.pdf", "AĞUSTOS 2026");
     }
 
     private void analyzeReport(TeraPdfParser parser, String path, String period) throws Exception {
         java.io.File file = new java.io.File(path);
+        if (!file.exists()) file = new java.io.File("../" + path);
         if (!file.exists()) file = new java.io.File("../../" + path);
+        Assumptions.assumeTrue(file.exists(), "Dosya bulunamadı: " + path);
         byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
         ParsedPortfolioReportDto report = parser.parse(bytes, "THF");
 
@@ -193,6 +197,8 @@ class PdfParserIntegrationTest {
     @Test
     @DisplayName("4. TTE Temmuz ve Ağustos Raporları Ayrıştırma ve Doğrulama Mekanizması")
     void testInspectTtePdfs() throws Exception {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
         IsPortfoyPdfParser parser = new IsPortfoyPdfParser();
         analyzeTteReport(parser, "samples/TTE_2026_07.pdf", "TEMMUZ 2026");
         analyzeTteReport(parser, "samples/TTE_2026_08.pdf", "AĞUSTOS 2026 (YENİ RAPOR)");
@@ -204,7 +210,7 @@ class PdfParserIntegrationTest {
         if (!file.exists()) file = new java.io.File("../../" + path);
         if (!file.exists()) file = new java.io.File("c:/Users/Yakup Yılmaz/Desktop/stajprojesi/" + path);
 
-        assertTrue(file.exists(), "TTE dosya yolu bulunamadı: " + path);
+        Assumptions.assumeTrue(file.exists(), "TTE dosya yolu bulunamadı: " + path);
         byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
         ParsedPortfolioReportDto report = parser.parse(bytes, "TTE");
 
@@ -294,15 +300,18 @@ class PdfParserIntegrationTest {
     @Test
     @DisplayName("4. TTE Temmuz, Ağustos ve Eylül Raporlarının Kapsamlı Ayrıştırma ve Doğruluk Analizi")
     void testTteAllThreeMonthsDetailedAnalysis() throws Exception {
+        Assumptions.assumeTrue(kapClient.hasLocalSamples(),
+                "'samples/' klasörü bulunamadı (CI ortamı). Bu yerel geliştirme testi atlanıyor.");
         String[] tteFiles = {
-            "c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/TTE_2026_07.pdf",
-            "c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/TTE_2026_08.pdf",
-            "c:/Users/Yakup Yılmaz/Desktop/stajprojesi/samples/TTE_2026_09.pdf"
+            "samples/TTE_2026_07.pdf",
+            "samples/TTE_2026_08.pdf",
+            "samples/TTE_2026_09.pdf"
         };
         String[] periods = {"TEMMUZ 2026", "AĞUSTOS 2026", "EYLÜL 2026"};
 
         for (int i = 0; i < tteFiles.length; i++) {
             java.io.File file = new java.io.File(tteFiles[i]);
+            if (!file.exists()) file = new java.io.File("../" + tteFiles[i]);
             if (!file.exists()) file = new java.io.File("../../" + tteFiles[i]);
             if (!file.exists()) {
                 System.out.println("Dosya bulunamadı: " + tteFiles[i]);

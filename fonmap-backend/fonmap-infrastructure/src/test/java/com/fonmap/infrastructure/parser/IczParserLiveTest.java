@@ -3,6 +3,7 @@ package com.fonmap.infrastructure.parser;
 import com.fonmap.infrastructure.parser.dto.ParsedHoldingDto;
 import com.fonmap.infrastructure.parser.dto.ParsedPortfolioReportDto;
 import com.fonmap.infrastructure.parser.strategy.TeraPdfParser;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@Disabled("Canlı KAP HTTP bağlantısı gerektiren yerel geliştirme testi - CI ortamında çalıştırılmaz")
 public class IczParserLiveTest {
 
     @Test

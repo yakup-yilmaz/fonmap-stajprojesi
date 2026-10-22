@@ -270,12 +270,10 @@ public class StartupCatchupService {
         int newlyImported = 0;
 
         for (Fund fund : activeFunds) {
-            Optional<FundReport> existingReport = fundReportRepository.findByFundIdAndReportDateWithFund(
-                    fund.getId(), lastMonthEnd);
-
-            if (existingReport.isPresent()) {
-                log.debug("[KAP_DISCOVERY] [STATUS=SKIPPED] [REASON=ALREADY_EXISTS] Fon='{}' {} dönemi raporu zaten mevcut.",
-                        fund.getCode(), lastMonthEnd);
+            List<FundReport> existingReports = fundReportRepository.findByFundIdOrderByReportDateDesc(fund.getId());
+            if (!existingReports.isEmpty()) {
+                log.info("[KAP_DISCOVERY] [STATUS=SKIPPED] [REASON=ALREADY_EXISTS] Fon='{}' {} dönemi raporu zaten mevcut.",
+                        fund.getCode(), existingReports.get(0).getReportDate());
                 continue;
             }
 
