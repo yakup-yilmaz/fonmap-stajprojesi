@@ -35,6 +35,7 @@ import org.springframework.data.domain.PageRequest;
 
 import com.fonmap.application.service.backtest.BacktestCacheService;
 import com.fonmap.domain.entity.Holding;
+import com.fonmap.infrastructure.parser.dto.ParsedPortfolioReportDto;
 import com.fonmap.infrastructure.repository.HoldingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
@@ -284,22 +285,71 @@ public class AdminController {
                                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                                                         "Fon bulunamadı: " + normalizedCode));
 
-                        // 🛡️ AKTİF PORTFÖY KORUMASI: Fonun sistemde çalışan aktif bir snapshot'ı ve varlıkları varsa
-                        // mükerrer indirme ve portföyü sıfırlayıp ezme engellenir.
+                        // 1. ADIM: Sistemdeki en güncel aktif snapshot'ı al
                         List<FundSnapshot> existingSnapshots = fundSnapshotRepository.findLatestByFundCode(normalizedCode, PageRequest.of(0, 1));
-                        if (!existingSnapshots.isEmpty()) {
-                                FundSnapshot activeSnapshot = existingSnapshots.get(0);
+                        FundSnapshot activeSnapshot = existingSnapshots.isEmpty() ? null : existingSnapshots.get(0);
+                        LocalDate latestDbDate = activeSnapshot != null ? activeSnapshot.getSnapshotDate() : null;
+
+                        // 2. ADIM: KAP'tan en son yayımlanmış raporu çek
+                        KapPdfDto pdfDto = kapClient.fetchPdf(normalizedCode, fund.getManager(), null, fund.getTitle());
+                        if (pdfDto == null || pdfDto.isEmpty()) {
+                                throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                                                "KAP'ta ve arşivde '" + normalizedCode
+                                                                + "' fonu için dağılım raporu bulunamadı.");
+                        }
+
+                        // 3. ADIM: SHA-256 Idempotency ön denetimi
+                        if (pdfDto.getSha256Hash() != null && !pdfDto.getSha256Hash().isBlank()) {
+                                Optional<FundReport> existingReportOpt = fundReportRepository.findByPdfSha256(pdfDto.getSha256Hash());
+                                if (existingReportOpt.isPresent() && activeSnapshot != null) {
+                                        List<Holding> activeHoldings = holdingRepository.findBySnapshotIdWithInstrument(activeSnapshot.getId());
+                                        if (!activeHoldings.isEmpty()) {
+                                                log.info("[AdminController] 🛡️ Fon '{}' için KAP'tan çekilen PDF (SHA-256: {}) veritabanında zaten kayıtlı. Mevcut portföy korundu.",
+                                                                normalizedCode, pdfDto.getSha256Hash());
+
+                                                String msg = "KAP denetlendi: KAP'taki en son resmi rapor ("
+                                                                + (latestDbDate != null ? latestDbDate : "")
+                                                                + ") zaten sistemde kayıtlı ve portföy ağırlıkları aktif (SHA-256 doğrulandı, mükerrer aktarım engellendi).";
+
+                                                return ResponseEntity.ok(new UploadReportResponse(
+                                                                activeSnapshot.getId().toString(),
+                                                                normalizedCode,
+                                                                activeSnapshot.getSnapshotDate(),
+                                                                activeSnapshot.getTotalNetAssetValue(),
+                                                                activeSnapshot.getStockRatio(),
+                                                                activeSnapshot.getViopCashRatio(),
+                                                                activeSnapshot.getIsSuspicious(),
+                                                                msg,
+                                                                true));
+                                        }
+                                }
+                        }
+
+                        // 4. ADIM: PDF'in rapor dönemini (kapReportDate) ayrıştırıp kontrol et
+                        LocalDate kapReportDate = null;
+                        try {
+                                ParsedPortfolioReportDto parsed = pdfImportService.parsePortfolioReport(pdfDto.getContent(), normalizedCode);
+                                if (parsed != null) {
+                                        kapReportDate = parsed.getReportDate();
+                                }
+                        } catch (Exception e) {
+                                log.warn("[AdminController] Fon '{}' için KAP PDF'i ön ayrıştırılırken tarih tespit edilemedi: {}",
+                                                normalizedCode, e.getMessage());
+                        }
+
+                        // 5. ADIM: EĞER KAP'TAKİ RAPOR SİSTEMDEKİNDEN DAHA YENİ DEĞİLSE (aynı tarih veya daha eski):
+                        // Sistemde zaten daha güncel veya aynı dönemin çalışan portföyü var demektir.
+                        // Mevcut çalışan portföy korunur, mükerrer aktarım engellenir.
+                        if (activeSnapshot != null && latestDbDate != null && kapReportDate != null && !kapReportDate.isAfter(latestDbDate)) {
                                 List<Holding> activeHoldings = holdingRepository.findBySnapshotIdWithInstrument(activeSnapshot.getId());
                                 if (!activeHoldings.isEmpty()) {
-                                        log.info("[AdminController] 🛡️ Fon '{}' için çalışan güncel portföy snapshot'ı ({}) ve {} adet varlık zaten aktif. Mükerrer indirme ve ezme engellendi.",
-                                                        normalizedCode, activeSnapshot.getSnapshotDate(), activeHoldings.size());
+                                        log.info("[AdminController] 🛡️ Fon '{}' için KAP denetlendi: KAP'taki bildirim tarihi ({}) sistemdeki aktif tarihten ({}) daha yeni değil. Mevcut çalışan portföy korundu.",
+                                                        normalizedCode, kapReportDate, latestDbDate);
 
-                                        String protectMessage = "KAP ve sistem arşivi denetlendi: '" + normalizedCode
-                                                        + "' için en güncel resmi rapor ("
-                                                        + activeSnapshot.getSnapshotDate()
-                                                        + ") zaten sistemde kayıtlı ve portföy ağırlıkları aktif (Mevcut çalışan portföy korundu, mükerrer aktarım atlandı).";
+                                        String protectMessage = "KAP denetlendi: KAP'taki en son resmi bildirim dönemi (" + kapReportDate
+                                                        + ") zaten sistemde kayıtlı (" + latestDbDate + "). Sistemdeki portföy güncel olduğu için mevcut çalışan portföy korundu (Mükerrer aktarım engellendi).";
 
-                                        UploadReportResponse response = new UploadReportResponse(
+                                        return ResponseEntity.ok(new UploadReportResponse(
                                                         activeSnapshot.getId().toString(),
                                                         normalizedCode,
                                                         activeSnapshot.getSnapshotDate(),
@@ -308,38 +358,31 @@ public class AdminController {
                                                         activeSnapshot.getViopCashRatio(),
                                                         activeSnapshot.getIsSuspicious(),
                                                         protectMessage,
-                                                        true);
-
-                                        return ResponseEntity.ok(response);
+                                                        true));
                                 }
                         }
 
-                        KapPdfDto pdfDto = kapClient.fetchPdf(normalizedCode, fund.getManager(), null, fund.getTitle());
-                        if (pdfDto == null || pdfDto.isEmpty()) {
-                                throw new ResponseStatusException(HttpStatus.NOT_FOUND,
-                                                "KAP'ta ve arşivde '" + normalizedCode
-                                                                + "' fonu için dağılım raporu bulunamadı.");
-                        }
-
+                        // 6. ADIM: KAP'TA DAHA YENİ BİR RAPOR TESPİT EDİLDİ (veya sistemde henüz portföy yok):
+                        // Yeni dönemin raporunu sisteme aktar ve portföy ağırlıklarını güncelle!
                         PdfImportService.PdfImportResult importResult = pdfImportService.importPdfReportWithResult(
                                         pdfDto.getContent(),
                                         normalizedCode,
                                         pdfDto.getSource(),
                                         pdfDto.getSha256Hash(),
-                                        LocalDateTime.now());
+                                        pdfDto.getDownloadedAt() != null ? pdfDto.getDownloadedAt() : LocalDateTime.now());
                         FundSnapshot snapshot = importResult.snapshot();
                         boolean isAlreadyImported = importResult.alreadyImported();
 
                         String message;
                         if (isAlreadyImported) {
-                                message = "KAP ve sistem arşivi denetlendi: '" + normalizedCode
+                                message = "KAP denetlendi: '" + normalizedCode
                                                 + "' için en güncel resmi rapor ("
                                                 + snapshot.getSnapshotDate()
-                                                + ") zaten sistemde kayıtlı ve portföy ağırlıkları aktif (SHA-256 doğrulandı, mükerrer aktarım atlandı).";
+                                                + ") zaten sistemde kayıtlı ve portföy ağırlıkları aktif (Mevcut çalışan portföy korundu).";
                         } else {
-                                message = "KAP'tan yeni dönem dağılım raporu (" + snapshot.getSnapshotDate()
-                                                + ") başarıyla indirilip içe aktarıldı (Kaynak: " + pdfDto.getSource()
-                                                + ").";
+                                message = "KAP'ta yeni dönem dağılım raporu (" + snapshot.getSnapshotDate()
+                                                + ") tespit edildi ve sistemdeki portföy güncellendi!"
+                                                + (latestDbDate != null ? " (Önceki dönem: " + latestDbDate + ")" : "");
                         }
 
                         UploadReportResponse response = new UploadReportResponse(

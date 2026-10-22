@@ -475,6 +475,28 @@ public class PdfImportService {
     }
 
     /**
+     * PDF içeriğini veritabanına yazmadan ayrıştırır ve yapılandırılmış rapor nesnesini döner.
+     * Bu metot, rapor dönemi (reportDate) ve varlık ön kontrollerinde kullanılır.
+     *
+     * @param pdfContent Ham PDF baytları
+     * @param fundCode   Fon kodu (örn: "TTE", "KHA", "ICZ")
+     * @return Ayrıştırılmış rapor paketi (ParsedPortfolioReportDto)
+     * @throws Exception Ayrıştırma hatası durumunda
+     */
+    public ParsedPortfolioReportDto parsePortfolioReport(byte[] pdfContent, String fundCode) throws Exception {
+        if (pdfContent == null || pdfContent.length == 0) {
+            throw new IllegalArgumentException("Ayrıştırılacak PDF içeriği boş olamaz: " + fundCode);
+        }
+        if (fundCode == null || fundCode.isBlank()) {
+            throw new IllegalArgumentException("Fon kodu boş olamaz");
+        }
+        String normalizedCode = fundCode.trim().toUpperCase(Locale.ROOT);
+        Optional<Fund> fundOpt = fundRepository.findByCode(normalizedCode);
+        String manager = fundOpt.map(Fund::getManager).orElse(null);
+        return pdfParserFactory.parseWithFallback(pdfContent, normalizedCode, manager);
+    }
+
+    /**
      * PDF dosyasını veritabanına hiçbir şey kaydetmeden analiz eder (Dry-Run
      * Preview).
      * Ayrıştırılan varlık sınıflarını (Hisse, VİOP, Repo, Bono), oranları ve

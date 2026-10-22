@@ -10,6 +10,8 @@ import com.fonmap.domain.entity.FundReport;
 import com.fonmap.domain.entity.FundSnapshot;
 import com.fonmap.domain.entity.Holding;
 import com.fonmap.infrastructure.client.kap.KapClient;
+import com.fonmap.infrastructure.client.kap.dto.KapPdfDto;
+import com.fonmap.infrastructure.parser.dto.ParsedPortfolioReportDto;
 import com.fonmap.infrastructure.repository.FundReportRepository;
 import com.fonmap.infrastructure.repository.FundRepository;
 import com.fonmap.infrastructure.repository.FundSnapshotRepository;
@@ -74,8 +76,16 @@ class AdminControllerTest {
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(adminController).build();
         objectMapper = new ObjectMapper();
+        objectMapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+        objectMapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
+        org.springframework.http.converter.json.MappingJackson2HttpMessageConverter converter =
+                new org.springframework.http.converter.json.MappingJackson2HttpMessageConverter(objectMapper);
+
+        mockMvc = MockMvcBuilders.standaloneSetup(adminController)
+                .setMessageConverters(converter)
+                .build();
     }
 
     @Test
@@ -213,5 +223,133 @@ class AdminControllerTest {
 
         verify(fundReportRepository, never()).delete(any());
         verify(backtestCacheService, never()).evict(any());
+    }
+
+    @Test
+    @DisplayName("POST /funds/{code}/discover-report - KAP'taki rapor tarihi mevcut aktif snapshot ile aynıysa portföy korunmalı")
+    void testAutoDiscoverReport_WhenKapHasSameOrOlderDate_ProtectsCurrentPortfolio() throws Exception {
+        Fund fund = Fund.builder().code("KHA").title("Kuvvetli Hisse").manager("QNB").build();
+        UUID snapshotId = UUID.randomUUID();
+        FundSnapshot activeSnapshot = FundSnapshot.builder()
+                .id(snapshotId)
+                .fund(fund)
+                .snapshotDate(LocalDate.of(2026, 8, 31))
+                .stockRatio(new BigDecimal("0.85"))
+                .totalNetAssetValue(new BigDecimal("50000000"))
+                .build();
+        Holding holding = Holding.builder().id(UUID.randomUUID()).snapshot(activeSnapshot).build();
+
+        KapPdfDto kapPdf = KapPdfDto.builder()
+                .fundCode("KHA")
+                .fileName("kha.pdf")
+                .content(new byte[]{1, 2, 3})
+                .sha256Hash("sha_august")
+                .source("https://kap.org.tr/bildirim/123")
+                .downloadedAt(java.time.LocalDateTime.now())
+                .build();
+        ParsedPortfolioReportDto parsedDto = ParsedPortfolioReportDto.builder()
+                .fundCode("KHA")
+                .reportDate(LocalDate.of(2026, 8, 31))
+                .build();
+
+        when(fundRepository.findByCode("KHA")).thenReturn(Optional.of(fund));
+        when(fundSnapshotRepository.findLatestByFundCode(eq("KHA"), any())).thenReturn(List.of(activeSnapshot));
+        when(kapClient.fetchPdf(eq("KHA"), any(), any(), any())).thenReturn(kapPdf);
+        when(fundReportRepository.findByPdfSha256("sha_august")).thenReturn(Optional.empty());
+        when(holdingRepository.findBySnapshotIdWithInstrument(snapshotId)).thenReturn(List.of(holding));
+        when(pdfImportService.parsePortfolioReport(any(), eq("KHA"))).thenReturn(parsedDto);
+
+        mockMvc.perform(post("/api/v1/admin/funds/KHA/discover-report"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.alreadyImported").value(true))
+                .andExpect(jsonPath("$.snapshotDate").value("2026-08-31"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("korundu")));
+
+        verify(pdfImportService, never()).importPdfReportWithResult(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("POST /funds/{code}/discover-report - KAP'ta daha yeni tarihli bir rapor varsa içeri aktarılmalı")
+    void testAutoDiscoverReport_WhenKapHasNewerDate_ImportsNewReport() throws Exception {
+        Fund fund = Fund.builder().code("KHA").title("Kuvvetli Hisse").manager("QNB").build();
+        UUID oldSnapshotId = UUID.randomUUID();
+        FundSnapshot oldSnapshot = FundSnapshot.builder()
+                .id(oldSnapshotId)
+                .fund(fund)
+                .snapshotDate(LocalDate.of(2026, 8, 31))
+                .build();
+
+        UUID newSnapshotId = UUID.randomUUID();
+        FundSnapshot newSnapshot = FundSnapshot.builder()
+                .id(newSnapshotId)
+                .fund(fund)
+                .snapshotDate(LocalDate.of(2026, 9, 30))
+                .stockRatio(new BigDecimal("0.88"))
+                .totalNetAssetValue(new BigDecimal("55000000"))
+                .build();
+
+        KapPdfDto kapPdf = KapPdfDto.builder()
+                .fundCode("KHA")
+                .fileName("kha_sep.pdf")
+                .content(new byte[]{4, 5, 6})
+                .sha256Hash("sha_september")
+                .source("https://kap.org.tr/bildirim/456")
+                .downloadedAt(java.time.LocalDateTime.now())
+                .build();
+        ParsedPortfolioReportDto parsedDto = ParsedPortfolioReportDto.builder()
+                .fundCode("KHA")
+                .reportDate(LocalDate.of(2026, 9, 30))
+                .build();
+
+        when(fundRepository.findByCode("KHA")).thenReturn(Optional.of(fund));
+        when(fundSnapshotRepository.findLatestByFundCode(eq("KHA"), any())).thenReturn(List.of(oldSnapshot));
+        when(kapClient.fetchPdf(eq("KHA"), any(), any(), any())).thenReturn(kapPdf);
+        when(fundReportRepository.findByPdfSha256("sha_september")).thenReturn(Optional.empty());
+        when(pdfImportService.parsePortfolioReport(any(), eq("KHA"))).thenReturn(parsedDto);
+        when(pdfImportService.importPdfReportWithResult(any(), eq("KHA"), any(), eq("sha_september"), any()))
+                .thenReturn(new PdfImportService.PdfImportResult(newSnapshot, false));
+
+        mockMvc.perform(post("/api/v1/admin/funds/KHA/discover-report"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.alreadyImported").value(false))
+                .andExpect(jsonPath("$.snapshotDate").value("2026-09-30"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("yeni dönem")));
+
+        verify(pdfImportService).importPdfReportWithResult(any(), eq("KHA"), any(), eq("sha_september"), any());
+    }
+
+    @Test
+    @DisplayName("POST /funds/{code}/discover-report - SHA256 zaten kayıtlıysa mevcut portföy korunmalı")
+    void testAutoDiscoverReport_WhenSha256Matches_ProtectsCurrentPortfolio() throws Exception {
+        Fund fund = Fund.builder().code("KHA").build();
+        UUID snapshotId = UUID.randomUUID();
+        FundSnapshot activeSnapshot = FundSnapshot.builder()
+                .id(snapshotId)
+                .fund(fund)
+                .snapshotDate(LocalDate.of(2026, 8, 31))
+                .build();
+        Holding holding = Holding.builder().id(UUID.randomUUID()).snapshot(activeSnapshot).build();
+
+        KapPdfDto kapPdf = KapPdfDto.builder()
+                .fundCode("KHA")
+                .fileName("kha.pdf")
+                .content(new byte[]{1})
+                .sha256Hash("sha_exact_match")
+                .source("https://kap.org.tr/bildirim/789")
+                .downloadedAt(java.time.LocalDateTime.now())
+                .build();
+
+        when(fundRepository.findByCode("KHA")).thenReturn(Optional.of(fund));
+        when(fundSnapshotRepository.findLatestByFundCode(eq("KHA"), any())).thenReturn(List.of(activeSnapshot));
+        when(kapClient.fetchPdf(eq("KHA"), any(), any(), any())).thenReturn(kapPdf);
+        when(fundReportRepository.findByPdfSha256("sha_exact_match")).thenReturn(Optional.of(FundReport.builder().build()));
+        when(holdingRepository.findBySnapshotIdWithInstrument(snapshotId)).thenReturn(List.of(holding));
+
+        mockMvc.perform(post("/api/v1/admin/funds/KHA/discover-report"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.alreadyImported").value(true))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("SHA-256 doğrulandı")));
+
+        verify(pdfImportService, never()).importPdfReportWithResult(any(), any(), any(), any(), any());
     }
 }
